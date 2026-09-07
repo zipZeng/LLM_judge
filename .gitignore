@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.pyc
+venv/
+.venv/
+env/
+
+# 评估报告与临时输出
+eval_report_*.json
+*.jsonl
+!data/judge_prompts.jsonl
+*.backup.*
+
+# Editor / IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
