@@ -1,8 +1,8 @@
 # 语料质量评估平台
 
-基于 [FastChat](https://github.com/lm-sys/FastChat) 的 `llm_judge` 模块构建的**语料（训练数据）质量评估平台**：对语料从「安全性、准确性、多样性、格式规范性」四个维度进行多模型迭代打分，过滤低质量语料，并转换为标准训练格式。
+一个**语料（训练数据）质量评估平台**：对语料从「安全性、准确性、多样性、格式规范性」四个维度进行多模型迭代打分，过滤低质量语料，并转换为标准训练格式。
 
-> 本目录原本是 FastChat 官方仓库，官方说明已备份至 `README.fastchat.backup.md`。本 README 仅描述在此之上新增的语料质量评估能力。
+> **设计参考**：本项目参考了 [FastChat](https://github.com/lm-sys/FastChat) 的 LLM-as-a-judge 评判格式设计思路，但代码完全独立实现，不依赖 FastChat。
 
 ---
 
@@ -74,7 +74,7 @@
 | 1–3 分 | 存在严重问题 |
 | 0 分 | 完全不合规 |
 
-每个维度的详细评分细则见 `fastchat/llm_judge/data/judge_prompts.jsonl` 中各条 `prompt_template`。
+每个维度的详细评分细则见 `data/judge_prompts.jsonl` 中各条 `prompt_template`。
 
 ---
 
@@ -86,13 +86,12 @@
 - **Ollama** 已安装并运行，且已拉取模型 `qwen3.5:4b`
 - Python 依赖：`requests`（`eval_loop.py` 需要）
 
-### 4.2 安装 FastChat 及依赖
+### 4.2 安装依赖
 
-本项目基于 FastChat 的 `llm_judge` 模块（本仓库已含该代码）。若需重新安装依赖：
+本项目仅依赖少量 Python 库，若需安装依赖：
 
 ```bash
 pip install requests
-# FastChat 本体已在本地（D:\Project\shixun3\FastChat），一般无需重复安装
 ```
 
 启动 Ollama 服务并确认模型存在：
@@ -222,7 +221,7 @@ python visualize.py --input "reports/*.jsonl" --threshold 6
 
 ### 6.1 judge_prompts.jsonl —— 评判提示词配置
 
-路径：`fastchat/llm_judge/data/judge_prompts.jsonl`
+路径：`data/judge_prompts.jsonl`
 
 每行一个 JSON 对象，字段如下（4 条，对应 4 个维度）：
 
@@ -240,9 +239,7 @@ python visualize.py --input "reports/*.jsonl" --threshold 6
 
 - `name`：维度标识（`safety` / `accuracy` / `diversity` / `format`）
 - `prompt_template`：完整评判提示词，`{text}` 为待评估语料占位符，要求模型输出 `[[评分]]` 格式
-- `output_format`：`"[[rating]]"`，评分提取正则与 FastChat `common.py` 一致
-
-> 原始 FastChat MT-bench 评判提示词已备份至 `fastchat/llm_judge/data/judge_prompts.jsonl.backup`。
+- `output_format`：`"[[rating]]"`，脚本用正则 `\[\[(\d+)\]\]` 提取评分
 
 ### 6.2 如何修改评估维度
 
@@ -285,13 +282,11 @@ python visualize.py --input "reports/*.jsonl" --threshold 6
 
 | 文件 | 说明 |
 |------|------|
-| `fastchat/llm_judge/data/judge_prompts.jsonl` | 4 条语料质量评判提示词（safety/accuracy/diversity/format） |
-| `fastchat/llm_judge/data/judge_prompts.jsonl.backup` | 原始 FastChat MT-bench 评判提示词备份 |
+| `data/judge_prompts.jsonl` | 4 条语料质量评判提示词（safety/accuracy/diversity/format） |
 | `eval_loop.py` | 多模型迭代打分脚本 |
 | `convert.py` | 数据格式转换脚本（Alpaca/ShareGPT） |
 | `visualize.py` | 评估结果可视化统计脚本 |
 | `README.md` | 本文档 |
-| `README.fastchat.backup.md` | FastChat 官方说明备份 |
 
 ---
 
