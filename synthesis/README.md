@@ -1,0 +1,110 @@
+# 合成数据生成与模型对比（synthesis/）
+
+基于 `prompts/` 目录下的提示词模板，为选题 41「大模型合成数据生成与质量评估平台」
+补齐两块核心能力：
+
+1. **合成数据生成**（`generate.py`）—— 按 Self-Instruct / Evol-Instruct / Magpie
+   三种范式生成指令-响应对，输出统一 JSONL 数据集。
+2. **评价生成语料的大模型**（`compare_models.py`）—— 同一批种子让
+   DeepSeek / GLM-5.3 / Qwen3.6 各生成一批数据，再由三者互评（LLM-as-Judge），
+   对比“谁生成的数据质量更高”，并给出排除自评的公平口径。
+
+## 目录结构
+
+```
+synthesis/
+├── llm.py             # 三家云端模型统一调用（DeepSeek + 硅基流动，OpenAI 兼容）
+├── jsonx.py           # 模型 JSON 输出鲁棒解析（围栏剥离/括号配平/递归展平）
+├── promptio.py        # 读取 prompts/*.md 提示词模板（路径自动推导）
+├── generate.py        # 合成数据生成器（三范式）
+├── compare_models.py  # 生成模型横向对比（生成 → 互评 → 汇总排名）
+├── .env.example       # API Key 配置示例（复制为 .env 填写）
+├── data/syn/          # 自动生成：生成的数据集 JSONL / 错误日志
+├── data/compare/<ts>/ # 自动生成：每家原始数据 + 每位评审报告 + summary.json
+└── README.md
+```
+
+## 环境准备
+
+```bash
+pip install requests python-dotenv
+```
+
+**API Key（`.env`）**：在 `synthesis/` 目录创建 `.env`（参照 `.env.example`）：
+
+```
+DEEPSEEK_API_KEY=sk-xxx          # DeepSeek 开放平台
+SILICONFLOW_API_KEY=sk-xxx       # 硅基流动（GLM-5.3 / Qwen3.6 共用）
+```
+
+Key 读取优先级：`synthesis/.env` → `git_hub/LLM_judge/.env`（若存在，与评估项目共用）
+→ 系统环境变量。缺 Key 的模型会被自动跳过并提示，不影响其他模型执行。
+`.env` 含密钥，请勿提交到 Git（已建议加入 .gitignore）。
+
+模型名/接口地址集中配置在 `llm.py` 的 `PROVIDERS` 表，若硅基流动模型 tag 变动，
+只改这一处即可。
+
+## 1. 合成数据生成 generate.py
+
+把范式模板全文作为提示词发给模型（附补充种子），解析并展平返回的 JSON，
+输出统一 JSONL：`{"paradigm", "category", "source_model", "instruction", "response"}`，
+全程按 (instruction, response) 去重。
+
+```bash
+# 三范式 × 所有已配 Key 的模型（缺 Key 自动跳过）
+python generate.py
+
+# 指定范式与模型
+python generate.py --paradigm self_instruct magpie --models deepseek glm
+
+# 自定义种子指令（| 分隔；不给则用模板内置默认种子）
+python generate.py --paradigm magpie --seeds "帮我写一封请假邮件|总结一篇论文的核心观点"
+
+# 预览不调用 API
+python generate.py --dry-run
+```
+
+参数：`--paradigm`（self_instruct/evol_instruct/magpie）、`--models`（deepseek/glm/qwen）、
+`--seeds`、`--max-tokens`（默认 8192）、`--output-dir`。
+
+**容错设计**：模型输出带 ```json 围栏、前后废话、键名漂移（如"指令/响应"）都能解析；
+某次调用失败记入 `data/syn/errors_<ts>.log` 并继续，不中断整批。
+
+## 2. 模型对比 compare_models.py
+
+三步流水线，全部按 `prompts/model_comparison.md` 设计：
+
+1. **生成**：同种子（默认模板附的 5 条）→ 三家各生成 `种子数 × --per-seed` 对；
+2. **组装**：按模板输入格式生成 `{"datasets": {deepseek:[...], glm:[...], qwen:[...]}}`；
+3. **互评**：deepseek / glm / qwen 各自按模板当评审，对四维打分、排名；
+4. **汇总**：打印对比表 + 两种口径排名（全量均分 / **排除自评均分**）。
+
+> ⚠ 评审团恰是三家被评模型自身，“自己给自己打分”天然有偏。
+> 故汇总时除全量口径外，另算**非自评均分**（该家数据只由另外两家评审打分），
+> 报告建议以该口径排名为准 —— 这也是本脚本相比直接调用模板更严谨的地方。
+
+```bash
+python compare_models.py                      # 默认：5 种子 × 2 对 × 3 家 = 各 10 对
+python compare_models.py --per-seed 3         # 加大样本量
+python compare_models.py --models glm qwen    # 只对比部分生成模型
+python compare_models.py --judges deepseek glm
+python compare_models.py --dry-run
+```
+
+输出到 `data/compare/<时间戳>/`：
+`gen_*.jsonl`（每家原始生成数据，可直接二次加工）、`judge_*.json`（每位评审完整打分与
+理由）、`summary.json`（投票汇总与排名）；控制台打印 ASCII 对比表与结论。
+
+## 与 LLM_judge 的关系
+
+- `LLM_judge/`：语料（含生成后数据）的四维质量评估流水线 —— 已单独成仓库；
+- `synthesis/`：**数据的产生（生成）与生成方对比**，二者结合即完整的
+  “生成 → 评估 → 筛选 → 导出”闭环。
+- 生成结果可直接喂给 `LLM_judge` 的 `pipeline.py`/`eval_loop.py` 做逐条筛选。
+
+## 待办 / 已知限制
+
+- `self_instruct.md` 模板未内嵌明确默认种子，脚本为它补了 5 条内置通用种子；
+  建议用 `--seeds` 按自己领域指定以获得更好效果。
+- 单次生成数量受模型单轮输出上限（`--max-tokens`）限制，需要大批量时建议
+  多跑几轮（当前脚本一轮一文件/一调用），或后续加批次参数自动续生成。
