@@ -1,14 +1,14 @@
 # -*- coding: utf-8 -*-
 """
-eval_loop.py — 语料质量多模型迭代评估脚本（基于 FastChat llm_judge 提示词）
+eval_loop.py — 语料质量多模型迭代评估脚本
 
 功能：
-    1. 加载 fastchat/llm_judge/data/judge_prompts.jsonl 中的 4 条评估提示词
+    1. 加载 data/judge_prompts.jsonl 中的 4 条评估提示词
        （safety / accuracy / diversity / format）
     2. 支持两种输入方式：命令行直接传入文本，或用 --file 读取文件
-    3. 核心流程：2 个模型（Ollama + DeepSeek）分别对 4 个维度打分，
-       每轮汇总双方意见后发回修正，共迭代 3 轮
-    4. 输出完整 JSON 评估报告（含每轮详情与最终合格/不合格结论，阈值 5 分）
+    3. 核心流程：3 个模型（DeepSeek + 硅基流动 GLM-5.3 / Qwen3.6-35B-A3B）分别对 4 个维度打分，
+       每轮汇总各方意见后发回修正，共迭代 3 轮
+    4. 输出完整 JSON 评估报告（含每轮详情、各维度权重、加权综合得分、各轮得分变化）
 
 用法示例：
     python eval_loop.py "这是一段待评估的语料文本"
@@ -25,6 +25,7 @@ import re
 import sys
 import time
 from datetime import datetime
+from functools import partial
 
 import requests
 from dotenv import load_dotenv
@@ -33,14 +34,15 @@ load_dotenv()
 
 # ============================ 配置区（按需修改） ============================
 
-# Ollama 本地服务
-OLLAMA_URL = "http://localhost:11434/api/generate"
-OLLAMA_MODEL = "qwen3.5:4b"
-
 # DeepSeek 在线 API
 DEEPSEEK_URL = "https://api.deepseek.com/v1/chat/completions"
 DEEPSEEK_MODEL = "deepseek-chat"
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "YOUR_DEEPSEEK_KEY")  # 从 .env 文件或环境变量读取
+
+# 硅基流动在线 API（OpenAI 兼容）
+SILICONFLOW_URL = "https://api.siliconflow.cn/v1/chat/completions"
+SILICONFLOW_API_KEY = os.getenv("SILICONFLOW_API_KEY", "YOUR_SILICONFLOW_KEY")  # 从 .env 文件或环境变量读取
+SILICONFLOW_MODELS = ["zai-org/GLM-5.3", "Qwen/Qwen3.6-35B-A3B"]
 
 # 评估提示词文件（相对脚本运行目录）
 JUDGE_PROMPTS_PATH = "data/judge_prompts.jsonl"
@@ -54,7 +56,23 @@ MAX_RETRY = 3
 # 需要评估的维度（需与 judge_prompts.jsonl 中的 name 一致）
 DIMENSIONS = ["safety", "accuracy", "diversity", "format"]
 
-# 分数提取正则：匹配 "[[8]]"、"[[8.5]]" 等（与 FastChat common.py 保持一致）
+# 各维度权重（用于加权综合得分，权重总和建议为 1.0；缺失维度会自动归一化）
+DIMENSION_WEIGHTS = {
+    "safety": 0.35,
+    "accuracy": 0.30,
+    "diversity": 0.20,
+    "format": 0.15,
+}
+
+# 维度中文显示名（用于最终结果与各轮变化表格）
+DIM_LABELS = {
+    "safety": "安全性",
+    "accuracy": "准确性",
+    "diversity": "多样性",
+    "format": "格式",
+}
+
+# 分数提取正则：匹配 "[[8]]"、"[[8.5]]" 等
 SCORE_PATTERN = re.compile(r"\[\[(\d+(?:\.\d+)?)\]\]")
 
 
@@ -116,21 +134,6 @@ def _post_json(url, payload, headers=None, timeout=TIMEOUT):
     raise RuntimeError(last_err)
 
 
-def call_ollama(system_prompt, user_prompt):
-    """调用 Ollama /api/generate，返回模型输出的原始文本。"""
-    full_prompt = f"{system_prompt}\n\n{user_prompt}" if system_prompt else user_prompt
-    payload = {
-        "model": OLLAMA_MODEL,
-        "prompt": full_prompt,
-        "stream": False,
-        "options": {"temperature": 0},
-    }
-    data = _post_json(OLLAMA_URL, payload)
-    if "response" not in data:
-        raise RuntimeError(f"Ollama 响应缺少 response 字段：{data}")
-    return data["response"].strip()
-
-
 def call_deepseek(system_prompt, user_prompt):
     """调用 DeepSeek /chat/completions（OpenAI 兼容），返回模型输出的原始文本。"""
     if DEEPSEEK_API_KEY == "YOUR_DEEPSEEK_KEY":
@@ -159,10 +162,43 @@ def call_deepseek(system_prompt, user_prompt):
         raise RuntimeError(f"DeepSeek 响应结构异常：{data}")
 
 
-# 两个模型的统一注册表（key 用于报告，label 用于展示，call 为统一调用函数）
+def call_siliconflow(system_prompt, user_prompt, model):
+    """调用硅基流动 /chat/completions（OpenAI 兼容），返回模型输出的原始文本。
+
+    model 为 SILICONFLOW_MODELS 中的模型 ID。
+    """
+    if SILICONFLOW_API_KEY == "YOUR_SILICONFLOW_KEY":
+        raise RuntimeError("硅基流动 API Key 仍是占位符，请在 .env 文件或环境变量中设置 SILICONFLOW_API_KEY")
+
+    headers = {
+        "Authorization": f"Bearer {SILICONFLOW_API_KEY}",
+        "Content-Type": "application/json",
+    }
+    messages = []
+    if system_prompt:
+        messages.append({"role": "system", "content": system_prompt})
+    messages.append({"role": "user", "content": user_prompt})
+
+    payload = {
+        "model": model,
+        "messages": messages,
+        "temperature": 0,
+        "max_tokens": 2048,
+        "stream": False,
+    }
+    data = _post_json(SILICONFLOW_URL, payload, headers=headers)
+    try:
+        return data["choices"][0]["message"]["content"].strip()
+    except (KeyError, IndexError) as e:
+        raise RuntimeError(f"硅基流动响应结构异常：{data}")
+
+
+# 三个模型的统一注册表（key 用于报告，label 用于展示，call 为统一调用函数）
+# 硅基流动的两个模型通过 partial 绑定各自的 model ID，保持 call(system_prompt, user_prompt) 统一签名
 MODELS = [
-    {"key": "ollama", "label": f"Ollama({OLLAMA_MODEL})", "call": call_ollama},
     {"key": "deepseek", "label": f"DeepSeek({DEEPSEEK_MODEL})", "call": call_deepseek},
+    {"key": "glm53", "label": "GLM-5.3（硅基流动）", "call": partial(call_siliconflow, model=SILICONFLOW_MODELS[0])},
+    {"key": "qwen36", "label": "Qwen3.6-35B-A3B（硅基流动）", "call": partial(call_siliconflow, model=SILICONFLOW_MODELS[1])},
 ]
 
 
@@ -185,8 +221,29 @@ def extract_score(text):
     return fallback
 
 
+def extract_reason(text, max_len=100):
+    """从模型输出中提取「精炼理由」作为控制台显示的简短摘要（完整理由仍存于报告 reason 字段）。
+
+    优先匹配「精炼理由：xxx」格式；若模型未按格式输出，则回退到评分前的文字截取。
+    """
+    # 1. 优先提取「精炼理由：」后面的内容，到「完整分析 / 分数」或行尾为止
+    m = re.search(r"精炼理由[:：]\s*(.+?)(?=完整分析|分数[:：]|\[\[|$)", text, re.DOTALL)
+    if m:
+        reason = re.sub(r"\s+", " ", m.group(1)).strip(" 。.；;，,")
+        if reason:
+            return reason[:max_len] + ("…" if len(reason) > max_len else "")
+
+    # 2. 兜底：取评分前的内容，压缩空白后截取前 max_len 字符
+    m2 = SCORE_PATTERN.search(text)
+    prefix = text[:m2.start()] if m2 else text
+    prefix = re.sub(r"\s+", " ", prefix).strip()
+    if not prefix:
+        return ""
+    return prefix[:max_len] + ("…" if len(prefix) > max_len else "")
+
+
 def build_refine_prompt(dim, text, prev_dim_results):
-    """构造第 2、3 轮的修正提示词：在原始评判指令后附加上一轮双方意见。
+    """构造第 2、3 轮的修正提示词：在原始评判指令后附加上一轮各方意见。
 
     dim              当前维度的提示词 dict
     text             待评估语料
@@ -214,7 +271,12 @@ def build_refine_prompt(dim, text, prev_dim_results):
 
 
 def compute_final(last_round_dim):
-    """根据最后一轮结果计算各维度得分、综合得分与结论。"""
+    """根据最后一轮结果计算各维度得分、加权综合得分与结论。
+
+    返回 (dim_scores, overall, passed, conclusion)：
+        dim_scores  各维度均分（各模型平均）
+        overall     加权综合得分（按 DIMENSION_WEIGHTS 加权，缺失维度自动归一化）
+    """
     dim_scores = {}
     for d in DIMENSIONS:
         scores = [
@@ -224,11 +286,64 @@ def compute_final(last_round_dim):
         ]
         dim_scores[d] = round(sum(scores) / len(scores), 2) if scores else None
 
-    valid = [s for s in dim_scores.values() if s is not None]
-    overall = round(sum(valid) / len(valid), 2) if valid else None
+    # 加权综合得分：只对有效分数加权，缺失维度按剩余权重归一化
+    weighted = 0.0
+    weight_sum = 0.0
+    for d in DIMENSIONS:
+        s = dim_scores[d]
+        w = DIMENSION_WEIGHTS.get(d, 0.0)
+        if s is not None and w > 0:
+            weighted += s * w
+            weight_sum += w
+    overall = round(weighted / weight_sum, 2) if weight_sum > 0 else None
+
     passed = overall is not None and overall >= PASS_THRESHOLD
     conclusion = "合格" if passed else "不合格"
     return dim_scores, overall, passed, conclusion
+
+
+def compute_round_scores(rounds_results):
+    """计算每个维度在每一轮的聚合得分（各模型均值）。
+
+    返回 {dim: [第1轮得分, 第2轮得分, ...]}，无有效分数时为 None。
+    """
+    dim_rounds = {d: [] for d in DIMENSIONS}
+    for rr in rounds_results:
+        dims = rr.get("dimensions", {})
+        for d in DIMENSIONS:
+            scores = [
+                v["score"]
+                for v in dims.get(d, {}).values()
+                if isinstance(v.get("score"), (int, float))
+            ]
+            avg = round(sum(scores) / len(scores), 2) if scores else None
+            dim_rounds[d].append(avg)
+    return dim_rounds
+
+
+def trend_arrow(scores):
+    """根据首尾轮得分判断趋势：↑ 上升 / ↓ 下降 / → 持平。"""
+    valid = [s for s in scores if isinstance(s, (int, float))]
+    if len(valid) < 2:
+        return "→"
+    first, last = valid[0], valid[-1]
+    if last > first:
+        return "↑"
+    if last < first:
+        return "↓"
+    return "→"
+
+
+def show_progress(step, total, label=""):
+    """用 \\r 覆盖式打印进度条（ASCII 字符，兼容 Windows 终端）。"""
+    if total <= 0:
+        total = 1
+    pct = step * 100.0 / total
+    bar_len = 20
+    filled = int(round(bar_len * step / total))
+    bar = "#" * filled + "-" * (bar_len - filled)
+    sys.stdout.write(f"\r  进度: [{bar}] {step}/{total} ({pct:5.1f}%) {label}   ")
+    sys.stdout.flush()
 
 
 # ============================ 主流程 ============================
@@ -244,6 +359,7 @@ def main():
     parser.add_argument("-o", "--output", help="评估报告输出路径（默认自动生成时间戳文件名）")
     parser.add_argument("--rounds", type=int, default=ROUNDS, help=f"迭代轮数（默认 {ROUNDS}）")
     parser.add_argument("--threshold", type=float, default=PASS_THRESHOLD, help=f"合格阈值（默认 {PASS_THRESHOLD}）")
+    parser.add_argument("--progress", action="store_true", help="用进度条替代逐条详情打印（批量评估时建议开启）")
     args = parser.parse_args()
 
     PASS_THRESHOLD = args.threshold
@@ -279,6 +395,8 @@ def main():
 
     if DEEPSEEK_API_KEY == "YOUR_DEEPSEEK_KEY":
         print("⚠ 提醒：DeepSeek API Key 仍为占位符，DeepSeek 相关请求会失败，请在 .env 文件或环境变量中设置 DEEPSEEK_API_KEY。", flush=True)
+    if SILICONFLOW_API_KEY == "YOUR_SILICONFLOW_KEY":
+        print("⚠ 提醒：硅基流动 API Key 仍为占位符，硅基流动相关请求会失败，请在 .env 文件或环境变量中设置 SILICONFLOW_API_KEY。", flush=True)
 
     print(
         f"开始评估：语料长度 {len(text)} 字符 | 模型 {len(MODELS)} 个 | "
@@ -289,14 +407,18 @@ def main():
     # ---- 3. 迭代评估 ----
     rounds_results = []
     prev_dim = None  # {dim_name: {label: {"score", "reason"}}}
+    total_steps = rounds * len(DIMENSIONS) * len(MODELS)
+    step = 0
 
     for r in range(1, rounds + 1):
-        print(f"\n==================== 第 {r}/{rounds} 轮 ====================", flush=True)
+        if not args.progress:
+            print(f"\n==================== 第 {r}/{rounds} 轮 ====================", flush=True)
         round_dim = {}
 
         for dim_name in DIMENSIONS:
             dim = dims[dim_name]
-            print(f"  ▶ 维度 [{dim_name}]", flush=True)
+            if not args.progress:
+                print(f"  ▶ 维度 [{dim_name}]", flush=True)
             round_dim[dim_name] = {}
 
             for model in MODELS:
@@ -309,21 +431,38 @@ def main():
 
                     raw = model["call"](dim["system_prompt"], user_prompt)
                     score = extract_score(raw)
+                    step += 1
+
                     if score is None:
-                        print(f"    - {label}: 调用成功但未提取到分数", flush=True)
                         round_dim[dim_name][label] = {"score": None, "reason": raw, "error": "分数解析失败"}
                     else:
-                        print(f"    - {label}: {score} 分", flush=True)
                         round_dim[dim_name][label] = {"score": score, "reason": raw}
+
+                    if args.progress:
+                        show_progress(step, total_steps, f"{DIM_LABELS.get(dim_name, dim_name)} · {label}")
+                    else:
+                        if score is None:
+                            print(f"    - {label}: 调用成功但未提取到分数", flush=True)
+                        else:
+                            print(f"    - {label}: {score} 分", flush=True)
+                            # 第 1 轮显示简短扣分理由
+                            reason_short = extract_reason(raw)
+                            if r == 1 and reason_short:
+                                print(f"      理由：{reason_short}", flush=True)
                 except Exception as e:
-                    print(f"    - {label}: 调用失败 -> {e}", flush=True)
+                    step += 1
                     round_dim[dim_name][label] = {"score": None, "reason": "", "error": str(e)}
+                    if args.progress:
+                        show_progress(step, total_steps, f"{DIM_LABELS.get(dim_name, dim_name)} · {label} 失败")
+                    else:
+                        print(f"    - {label}: 调用失败 -> {e}", flush=True)
 
         rounds_results.append({"round": r, "dimensions": round_dim})
         prev_dim = round_dim
 
     # ---- 4. 汇总最终结果 ----
     dim_scores, overall, passed, conclusion = compute_final(prev_dim)
+    round_scores = compute_round_scores(rounds_results)
 
     report = {
         "meta": {
@@ -338,9 +477,11 @@ def main():
         "rounds": rounds_results,
         "final": {
             "dimension_scores": dim_scores,
+            "weights": DIMENSION_WEIGHTS,
             "overall_score": overall,
             "passed": passed,
             "conclusion": conclusion,
+            "round_trend": round_scores,
         },
     }
 
@@ -349,12 +490,34 @@ def main():
     with open(out_path, "w", encoding="utf-8") as f:
         json.dump(report, f, ensure_ascii=False, indent=2)
 
+    if args.progress:
+        print()  # 进度条结束后换行，避免与最终结果粘连
+
+    # 最终结果：各维度得分 × 权重 = 加权得分，及加权综合得分
     print("\n==================== 最终评估结果 ====================", flush=True)
     for d in DIMENSIONS:
         s = dim_scores[d]
-        print(f"  {d:10s}: {'未评分' if s is None else s}", flush=True)
-    print(f"  综合得分  : {'未评分' if overall is None else overall}", flush=True)
-    print(f"  结论      : {conclusion}（阈值 {PASS_THRESHOLD}）", flush=True)
+        label = DIM_LABELS.get(d, d)
+        if s is None:
+            print(f"  {label:<6}: 未评分", flush=True)
+        else:
+            w = DIMENSION_WEIGHTS.get(d, 0.0)
+            weighted = round(s * w, 2)
+            pct = int(round(w * 100))
+            print(f"  {label:<6}: {s:<5} × {pct}% = {weighted:.2f}", flush=True)
+    print(f"  加权综合得分：{overall if overall is not None else '未评分'}（阈值 {PASS_THRESHOLD}）", flush=True)
+    print(f"  结论      ：{conclusion}", flush=True)
+
+    # 各轮得分变化表
+    print("\n各轮得分变化：", flush=True)
+    print("  " + "维度".ljust(6) + "  " + "  ".join(f"第{r}轮" for r in range(1, rounds + 1)) + "  趋势", flush=True)
+    for d in DIMENSIONS:
+        label = DIM_LABELS.get(d, d)
+        scores = round_scores[d]
+        cells = "  ".join(f"{s if s is not None else '--':>6}" for s in scores)
+        arrow = trend_arrow(scores)
+        print(f"  {label:<6}  {cells}  {arrow}", flush=True)
+
     print(f"\n完整 JSON 报告已保存：{out_path}", flush=True)
 
 
