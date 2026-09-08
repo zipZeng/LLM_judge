@@ -15,17 +15,21 @@ eval_loop.py — 语料质量多模型迭代评估脚本（基于 FastChat llm_j
     python eval_loop.py --file corpus.txt
     python eval_loop.py --file corpus.txt --rounds 3 --threshold 5 --output report.json
 
-依赖：requests（若未安装请执行 pip install requests）
+依赖：requests、python-dotenv（若未安装请执行 pip install requests python-dotenv）
 """
 
 import argparse
 import json
+import os
 import re
 import sys
 import time
 from datetime import datetime
 
 import requests
+from dotenv import load_dotenv
+
+load_dotenv()
 
 # ============================ 配置区（按需修改） ============================
 
@@ -36,7 +40,7 @@ OLLAMA_MODEL = "qwen3.5:4b"
 # DeepSeek 在线 API
 DEEPSEEK_URL = "https://api.deepseek.com/v1/chat/completions"
 DEEPSEEK_MODEL = "deepseek-chat"
-DEEPSEEK_API_KEY = "YOUR_DEEPSEEK_KEY"  # TODO: 请替换为你的真实 API Key
+DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "YOUR_DEEPSEEK_KEY")  # 从 .env 文件或环境变量读取
 
 # 评估提示词文件（相对脚本运行目录）
 JUDGE_PROMPTS_PATH = "data/judge_prompts.jsonl"
@@ -130,7 +134,7 @@ def call_ollama(system_prompt, user_prompt):
 def call_deepseek(system_prompt, user_prompt):
     """调用 DeepSeek /chat/completions（OpenAI 兼容），返回模型输出的原始文本。"""
     if DEEPSEEK_API_KEY == "YOUR_DEEPSEEK_KEY":
-        raise RuntimeError("DeepSeek API Key 仍是占位符，请在脚本顶部 DEEPSEEK_API_KEY 处填入真实 Key")
+        raise RuntimeError("DeepSeek API Key 仍是占位符，请在 .env 文件或环境变量中设置 DEEPSEEK_API_KEY")
 
     headers = {
         "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
@@ -274,7 +278,7 @@ def main():
         sys.exit(f"错误：提示词文件缺少以下维度：{missing}（现有：{list(dims.keys())}）")
 
     if DEEPSEEK_API_KEY == "YOUR_DEEPSEEK_KEY":
-        print("⚠ 提醒：DeepSeek API Key 仍为占位符，DeepSeek 相关请求会失败，请先在脚本顶部填写真实 Key。", flush=True)
+        print("⚠ 提醒：DeepSeek API Key 仍为占位符，DeepSeek 相关请求会失败，请在 .env 文件或环境变量中设置 DEEPSEEK_API_KEY。", flush=True)
 
     print(
         f"开始评估：语料长度 {len(text)} 字符 | 模型 {len(MODELS)} 个 | "
@@ -341,7 +345,7 @@ def main():
     }
 
     # ---- 5. 输出 ----
-    out_path = args.output or f"eval_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+    out_path = args.output or f"reports/eval_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
     with open(out_path, "w", encoding="utf-8") as f:
         json.dump(report, f, ensure_ascii=False, indent=2)
 

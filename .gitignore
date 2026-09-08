@@ -4,6 +4,7 @@ __pycache__/
 venv/
 .venv/
 env/
+.env
 
 # 评估报告与临时输出
 eval_report_*.json
