@@ -20,6 +20,13 @@ import sys
 
 import jsonx
 
+# 控制台默认代码页在中文 Windows 上不是 UTF-8，不重设会把中文打成乱码
+for _s in (sys.stdout, sys.stderr):
+    try:
+        _s.reconfigure(encoding="utf-8")
+    except Exception:
+        pass
+
 
 def _pairs(obj):
     return jsonx.walk_pairs(obj)
