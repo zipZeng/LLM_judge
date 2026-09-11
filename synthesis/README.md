@@ -24,7 +24,7 @@ synthesis/
 │   ├── seed_rewrite.md       # 种子改写增强（第四种范式）
 │   └── model_comparison.md   # 模型对比用评审模板
 ├── .env.example       # API Key 配置示例（复制为 .env 填写）
-├── data/syn/          # 自动生成：生成的数据集 JSONL / 错误日志
+├── data/syn/          # 自动生成：数据集 JSONL / 错误日志 / raw_<ts>/ 模型原始输出
 ├── data/compare/<ts>/ # 自动生成：每家原始数据 + 每位评审报告 + summary.json
 └── README.md
 ```
@@ -96,6 +96,11 @@ python generate.py --dry-run
 
 **容错设计**：模型输出带 ```json 围栏、前后废话、键名漂移（如"指令/响应"）都能解析；
 某次调用失败记入 `data/syn/errors_<ts>.log` 并继续，不中断整批。
+
+**原始输出落盘**：每次调用的模型原始返回同时存到 `data/syn/raw_<ts>/<范式>_<模型>.txt`，
+**解析失败的那份存成 `.failed.txt`** 并保留。这是排查问题的唯一依据 —— 数据对进了
+JSONL 之后就看不出模型到底返回了什么（被 `max_tokens` 截断？键名漂移？结构不对？）。
+`--no-save-raw` 可关闭。演示时若不需要留档，加这个开关即可。
 
 **推理模型适配（两个脚本均适用）**：GLM-5.3 / Qwen3.6 的思维链写在 `reasoning_content`，
 **同样消耗 `max_tokens` 预算**，且单次大 JSON 生成实测约 250 秒。故 `--max-tokens` 默认

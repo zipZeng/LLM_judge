@@ -7,6 +7,10 @@ generate.py — 合成数据生成器（Self-Instruct / Evol-Instruct / Magpie /
     {"paradigm": "self_instruct", "category": "...", "source_model": "deepseek",
      "instruction": "...", "response": "..."}
 
+每次调用的**模型原始输出**同时落盘到 `data/syn/raw_<时间戳>/`，解析失败的那份带
+`.failed.txt` 后缀。数据对一旦进了 JSONL 就看不出"模型到底返回了什么"，出问题时
+（截断？键名漂移？结构不对？）没有这份原始输出就无法回查。用 `--no-save-raw` 关闭。
+
 用法示例：
     # 四个范式 × 所有已配置 Key 的模型
     python generate.py
@@ -88,21 +92,48 @@ def build_messages(paradigm, template, seeds):
     ]
 
 
+class GenerateError(Exception):
+    """生成或解析失败，但保留模型原始输出。
+
+    解析失败时的原始输出恰恰最有排查价值（是不是被截断？键名漂移？结构不对？），
+    所以挂到异常上带到调用方落盘，而不是随异常一起丢掉。
+    llm 层就失败的（超时/网络）没有 raw，此时 raw 为空串。
+    """
+
+    def __init__(self, msg, raw=""):
+        super().__init__(msg)
+        self.raw = raw
+
+
+def save_raw(raw_dir, paradigm, model, raw, failed=False):
+    """把模型原始输出落盘到 raw_<时间戳>/，便于事后回查。
+
+    命名 `<范式>_<模型>.txt`；失败的加 `.failed.txt` 后缀，一眼能挑出来。
+    数据本身已在数据集 JSONL 里，这里存的是"模型到底返回了什么"，用于复盘解析问题。
+    """
+    raw_dir.mkdir(parents=True, exist_ok=True)
+    suffix = ".failed.txt" if failed else ".txt"
+    path = raw_dir / f"{paradigm}_{model}{suffix}"
+    path.write_text(raw, encoding="utf-8")
+    return path
+
+
 def generate_one(provider, paradigm, template, seeds, max_tokens, timeout=600):
     """调用单个模型生成一轮合成数据。
 
     返回 (pairs, raw)：pairs 为展平后的数据对列表，raw 为模型原始输出。
-    解析失败时抛 ValueError，由调用方记入错误日志。
+    解析失败时抛 GenerateError（异常对象上带 raw），由调用方落盘并记入错误日志。
     """
     messages = build_messages(paradigm, template, seeds)
     raw = llm.call_chat(provider, messages, temperature=0.8,
                         max_tokens=max_tokens, timeout=timeout)
     obj = jsonx.extract_json(raw)
     if obj is None:
-        raise ValueError(f"输出中未解析出合法 JSON。片段：{raw[:200]}...")
+        raise GenerateError(f"输出中未解析出合法 JSON。片段：{raw[:200]}...", raw)
     pairs = jsonx.walk_pairs(obj)
     if not pairs:
-        raise ValueError(f"JSON 中未找到 instruction/response 数据对。片段：{raw[:200]}...")
+        raise GenerateError(
+            f"JSON 中未找到 instruction/response 数据对。片段：{raw[:200]}...", raw)
     return pairs, raw
 
 
@@ -127,6 +158,9 @@ def main():
                         help="输出目录（默认 data/syn）")
     parser.add_argument("--dry-run", action="store_true",
                         help="不调用模型，仅打印将发送的提示词长度与开头片段")
+    parser.add_argument("--no-save-raw", action="store_true",
+                        help="不把模型原始输出落盘（默认存到 data/syn/raw_<时间戳>/，"
+                             "解析失败的那份带 .failed 后缀，便于事后回查）")
     args = parser.parse_args()
 
     seeds = [s.strip() for s in args.seeds.split("|") if s.strip()] if args.seeds else None
@@ -136,6 +170,7 @@ def main():
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = out_dir / f"syn_data_{ts}.jsonl"
     err_path = out_dir / f"errors_{ts}.log"
+    raw_dir = out_dir / f"raw_{ts}"   # 模型原始输出，与本次数据集同一时间戳
 
     # 过滤可用模型（缺 Key 提示后跳过）；dry-run 展示全部计划，不真正调用
     models, _missing = llm.check_available(args.models)
@@ -170,11 +205,17 @@ def main():
                 pairs, raw = generate_one(model, paradigm, template, eff_seeds,
                                           args.max_tokens, args.timeout)
             except Exception as e:
+                # 失败的原始输出排查价值最高，尽量留下（llm 层就失败的没有 raw）
+                failed_raw = getattr(e, "raw", "")
+                if failed_raw and not args.no_save_raw:
+                    save_raw(raw_dir, paradigm, model, failed_raw, failed=True)
                 print(f"{tag} ✗ 失败：{e}", flush=True)
                 with open(err_path, "a", encoding="utf-8") as f:
                     f.write(json.dumps({"paradigm": paradigm, "model": model,
                                         "error": str(e)}, ensure_ascii=False) + "\n")
                 continue
+            if not args.no_save_raw:
+                save_raw(raw_dir, paradigm, model, raw)
 
             # 展平结果 → 统一 JSONL，做整体去重
             added = 0
@@ -211,6 +252,11 @@ def main():
             print("  " + s)
         print(f"本次共 {total_calls} 次调用，产出去重后 {total_added} 条数据")
         print(f"数据集文件：{out_path}")
+        if raw_dir.exists():
+            n_raw = len(list(raw_dir.glob("*.txt")))
+            n_bad = len(list(raw_dir.glob("*.failed.txt")))
+            print(f"原始输出：  {raw_dir}  （{n_raw} 个文件"
+                  + (f"，其中 {n_bad} 个解析失败 .failed.txt" if n_bad else "") + "）")
         if out_path.exists() and out_path.stat().st_size == 0:
             print("⚠ 文件为空：请检查 prompts/ 模板与模型返回，或查看错误日志 "
                   f"{err_path}")
