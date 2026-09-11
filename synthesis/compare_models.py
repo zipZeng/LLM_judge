@@ -18,11 +18,19 @@ compare_models.py — 评价生成语料的大模型：DeepSeek / GLM / Qwen 生
     python compare_models.py --judges deepseek glm  # 只让指定模型当评审
     python compare_models.py --dry-run              # 不调用 API，预览流程
 
+    python compare_models.py --from-report data/compare/20260911_104142
+        # 不调用 API，重放已存档的对比结果，秒级打印同一张表。
+        # 现场演示用：真实跑一次要 25–45 分钟（推理模型单次约 250 秒），等不起。
+
 输出（data/compare/<时间戳>/）：
     gen_deepseek.jsonl / gen_glm.jsonl / gen_qwen.jsonl   三家各自生成的原始数据
     judge_<评审模型>.json                                  每位评审的完整报告
     summary.json                                           汇总投票与两种口径排名
     控制台直接打印对比表格与最终排名
+
+`--dry-run` 与 `--from-report` 都不需要 API Key，也不写任何文件。
+`--from-report` 与正常跑**共用同一段渲染代码**（`render_report`），
+故重放出来的表与现跑出来的完全一致，不是另写一套。
 
 依赖：requests、python-dotenv（pip install requests python-dotenv）
 """
@@ -169,6 +177,86 @@ def _mean(vals):
     return round(sum(nums) / len(nums), 2) if nums else None
 
 
+def render_report(gen_models, judge_keys, votes, source=None):
+    """把 votes 渲染成对比表 + 排名 + 两项方法学检验，返回 ranking_data。
+
+    **现跑与 `--from-report` 重放共用这一段** —— 两条路径共用才能保证
+    「重放出来的表」和「现跑出来的表」是同一套口径。抽出来的直接原因：
+    答辩现场跑一次真实对比要 25–45 分钟（推理模型单次约 250 秒），等不起；
+    用存档 summary.json 重放是秒级的。
+    """
+    lines = [["生成模型"] + [DISPLAY_NAME.get(j, j) for j in judge_keys]
+             + ["全量均分", "非自评均分*"]]
+    ranking_data = []
+    for g in gen_models:
+        row_votes = [votes[j].get(g) for j in judge_keys]
+        non_self = [votes[j].get(g) for j in judge_keys if j != g]
+        non_self_mean = _mean(non_self)
+        # ⚠ 这一列是全量均分（含自评），不是自评分。原表头写「自评均分」是错的：
+        # 09-11 那次 DeepSeek 全量 8.67，但它给自己打的是 8.25。
+        all_mean = _mean([v for v in row_votes if v is not None])
+        self_score = votes[g].get(g) if g in votes else None
+        cells = [f"{v:.2f}" if v is not None else "—" for v in row_votes]
+        cells += [f"{all_mean:.2f}" if all_mean is not None else "—",
+                  f"{non_self_mean:.2f}" if non_self_mean is not None else "—"]
+        lines.append([DISPLAY_NAME.get(g, g)] + cells)
+        ranking_data.append((g, non_self_mean, all_mean, self_score))
+
+    # ASCII 表格（宽度按各列最大宽度对齐）
+    widths = [max(len(lines[r][c]) for r in range(len(lines)))
+              for c in range(len(lines[0]))]
+    print("\n================ 生成模型质量对比（LLM-as-Judge） ================")
+    for r, row in enumerate(lines):
+        print("  " + " | ".join(
+            cell.ljust(widths[c]) for c, cell in enumerate(row)))
+        if r == 0:
+            print("  " + "-+-".join("-" * w for w in widths))
+
+    print("\n排名（按非自评均分* 降序）：")
+    for rank, (g, nsm, allm, ss) in enumerate(
+            sorted(ranking_data, key=lambda x: (x[1] if x[1] is not None else -1),
+                   reverse=True), 1):
+        print(f"  {rank}. {DISPLAY_NAME.get(g, g)}\t非自评 {nsm}\t（全量口径 {allm}）")
+
+    if len(gen_models) >= 2:
+        # 这两项是需求「评价生成语料的大模型」的核心方法学检验，现跑与重放都要有：
+        # 评委尺度决定分数能不能跨评审横向比；自评偏好决定要不要排除自评。
+        print("\n评委尺度（该评委给出的均分；越高越宽松。差距大 ⇒ 跨评审比绝对分不可靠）：")
+        for j in judge_keys:
+            vals = [votes[j].get(g) for g in gen_models if votes[j].get(g) is not None]
+            print(f"  {DISPLAY_NAME.get(j, j)}\t{_mean(vals)}")
+        # 自评偏好 = 该模型给自己的分 − 别人给它的均分。
+        # ⚠ 不能用「全量均分 − 非自评均分」：全量均分本身就含自评，减出来只有真值的一半左右。
+        # 实测 09-11 DeepSeek 真值 −0.63（8.25 − 8.88），错法算出 −0.21。
+        print("\n自评偏好（自评分 − 他人均分；正 = 给自己打高分）：")
+        for g, nsm, allm, ss in ranking_data:
+            d = "—" if (ss is None or nsm is None) else f"{ss - nsm:+.2f}"
+            extra = "" if ss is None else f"（自评 {ss}）"
+            print(f"  {DISPLAY_NAME.get(g, g)}\t{d}{extra}")
+
+        best = max(ranking_data,
+                   key=lambda x: (x[1] if x[1] is not None else -1,
+                                  x[2] if x[2] is not None else -1))
+        worst = min(ranking_data, key=lambda x: (x[1] if x[1] is not None else 11))
+        print(f"\n结论：{DISPLAY_NAME.get(best[0], best[0])} 生成数据质量综合最高；"
+              f"{DISPLAY_NAME.get(worst[0], worst[0])} 相对较弱。")
+    print("单条理由见各 judge_*.json 的 details 字段。")
+    print("* 非自评 = 排除该生成模型自己当评审时的打分（评审团包含其本人，避免自吹自擂偏差）")
+    print(f"报告目录：{source}")
+    return ranking_data
+
+
+def load_summary(path):
+    """读存档的 summary.json；也接受 `data/compare/<时间戳>/` 目录。"""
+    p = Path(path)
+    if p.is_dir():
+        p = p / "summary.json"
+    if not p.is_file():
+        sys.exit(f"错误：找不到 {p}。--from-report 需要 summary.json 本身或其所在目录。")
+    with open(p, encoding="utf-8") as f:
+        return json.load(f), p
+
+
 def main():
     _ensure_utf8_stdout()
     parser = argparse.ArgumentParser(
@@ -191,7 +279,36 @@ def main():
                         help="输出目录（默认 data/compare）")
     parser.add_argument("--dry-run", action="store_true",
                         help="不调用 API，仅预览流程与各步骤提示词大小")
+    parser.add_argument("--from-report", metavar="路径", default=None,
+                        help="不调用 API，直接重放已存档的对比结果并打印同一张表。"
+                             "传 summary.json 本身或 data/compare/<时间戳>/ 目录。"
+                             "现场演示用：真实跑一次要 25–45 分钟，重放是秒级。")
     args = parser.parse_args()
+
+    # ---------- 只读重放：必须在任何 Key 检查之前返回 ----------
+    # 演示机器可能没配 .env，重放不该因为缺 Key 而失败。
+    if args.from_report:
+        data, path = load_summary(args.from_report)
+        votes = data.get("votes") or {}
+        if not votes:
+            sys.exit(f"错误：{path} 里没有 votes 字段，无法重放（该存档可能是失败运行）。")
+        judge_keys = data.get("judges") or list(votes.keys())
+        # 行序优先用 generated_counts（即当年生成阶段的模型顺序）；旧存档缺该字段时
+        # 回退到从 votes 里收集，并丢掉「一条票都没有」的模型，避免打出空行。
+        gen_models = list((data.get("generated_counts") or {}).keys()) \
+            or list({g for v in votes.values() for g in v})
+        gen_models = [g for g in gen_models
+                      if any(g in votes.get(j, {}) for j in judge_keys)]
+        if not gen_models:
+            sys.exit(f"错误：{path} 里没有任何生成模型拿到评分，无法重放。")
+        n_seeds, per_seed = len(data.get("seeds") or []), data.get("per_seed")
+        print(f"重放存档：{path}")
+        if n_seeds and per_seed:
+            print(f"种子 {n_seeds} 条 | 每家生成 {n_seeds * per_seed} 对 | "
+                  f"评审：{', '.join(DISPLAY_NAME.get(j, j) for j in judge_keys)}")
+        render_report(gen_models, judge_keys, votes, source=path.parent)
+        print(f"（--from-report 为只读重放：未调用任何 API，未写入任何文件）")
+        return
 
     seeds = [s.strip() for s in args.seeds.split("|") if s.strip()] if args.seeds \
         else DEFAULT_SEEDS
@@ -273,45 +390,9 @@ def main():
     print(f"评审完成：{ {k: len(v) for k, v in votes.items()} }")
 
     # ---------- 汇总与打印 ----------
+    # 与 --from-report 共用 render_report，保证「现跑的」和「重放的」是同一套口径
     judge_keys = list(votes.keys())
-    lines = [["生成模型"] + [DISPLAY_NAME[j] for j in judge_keys]
-             + ["自评均分", "非自评均分*"]]
-    ranking_data = []  # (生成模型, 非自评均分, 自评均分)
-    for g in gen_models:
-        row_votes = [votes[j].get(g) for j in judge_keys]
-        self_vote = votes.get(g, {}).get(g) if g in votes else None
-        non_self = [votes[j].get(g) for j in judge_keys if j != g]
-        non_self_mean = _mean(non_self)
-        self_mean = _mean([v for v in row_votes if v is not None])
-        cells = [f"{v:.2f}" if v is not None else "—" for v in row_votes]
-        cells += [f"{self_mean:.2f}" if self_mean is not None else "—",
-                  f"{non_self_mean:.2f}" if non_self_mean is not None else "—"]
-        lines.append([DISPLAY_NAME[g]] + cells)
-        ranking_data.append((g, non_self_mean, self_mean))
-
-    # ASCII 表格
-    widths = [max(len(lines[r][c]) for r in range(len(lines)))
-              for c in range(len(lines[0]))]
-    print("\n================ 生成模型质量对比（LLM-as-Judge） ================")
-    for r, row in enumerate(lines):
-        print("  " + " | ".join(
-            cell.ljust(widths[c]) for c, cell in enumerate(row)))
-        if r == 0:
-            print("  " + "-+-".join("-" * w for w in widths))
-    print("\n排名（按非自评均分* 降序）：")
-    for rank, (g, nsm, sm) in enumerate(
-            sorted(ranking_data, key=lambda x: (x[1] if x[1] is not None else -1),
-                   reverse=True), 1):
-        print(f"  {rank}. {DISPLAY_NAME[g]}\t非自评 {nsm}\t（自评口径 {sm}）")
-
-    best = max(ranking_data,
-               key=lambda x: (x[1] if x[1] is not None else -1, x[2] if x[2] is not None else -1))
-    worst = min(ranking_data, key=lambda x: (x[1] if x[1] is not None else 11))
-    print(f"\n结论：{DISPLAY_NAME[best[0]]} 生成数据质量综合最高；"
-          f"{DISPLAY_NAME[worst[0]]} 相对较弱。"
-          f"详细单条理由见各 judge_*.json 的 details 字段。")
-    print("* 非自评 = 排除该生成模型自己当评审时的打分（评审团包含其本人，避免自吹自擂偏差）")
-    print(f"完整报告目录：{out_dir}")
+    ranking_data = render_report(gen_models, judge_keys, votes, source=out_dir)
 
     # 存档汇总
     summary = {
@@ -321,8 +402,8 @@ def main():
         "judges": judge_keys,
         "votes": {j: votes[j] for j in judge_keys},
         "ranking": [
-            {"model": g, "non_self_mean": nsm, "self_mean": sm}
-            for g, nsm, sm in sorted(
+            {"model": g, "non_self_mean": nsm, "all_mean": allm, "self_score": ss}
+            for g, nsm, allm, ss in sorted(
                 ranking_data,
                 key=lambda x: (x[1] if x[1] is not None else -1), reverse=True)
         ],
