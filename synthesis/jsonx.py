@@ -68,33 +68,50 @@ def walk_pairs(node, inherited=None):
 
     返回记录列表：[{"instruction": str, "response": str, "category": str}]
     category 由节点所在层级附近的 domain / type / task_name /
-    evolution_type 等语义字段用 " | " 拼接，用于事后按类别统计。
+    evolution_type / rewrite_type 等语义字段用 " | " 拼接，用于事后按类别统计。
+
+    ⚠ 遍历顺序：**先下钻子节点，再登记当前节点；同名数据对只登记一次。**
+
+    两条都反过来做会静默丢数据：
+
+    1. 先判定当前节点、命中即 return —— 模型常把真正的数据对放在列表里，
+       同时又在包装层上带了 instruction/response 字段，于是只登记了包装层那一条
+       （实测 GLM 的 evol 输出 4968 字符 / 9 条数据对，只入库了 1 条）。
+    2. 先下钻、但"子节点有产出就跳过当前节点" —— 会丢掉**当前节点自己**那条
+       真数据对：`{"instruction":A,"response":B,"variants":[{C,D}]}` 只留下 C/D。
+
+    故这里的规则是：子节点先登记（它们继承父级字段、category 更全，回显场景下
+    应优先保留），父节点在自己那条**没被子节点产出过**时再登记。整个函数按
+    (instruction, response) 去重，因此包装层回显不会重复登记。
     """
 
     def _walk(n, cats):
         if isinstance(n, dict):
             cur = list(cats)
             for k in ("domain", "type", "task_name", "task_type",
-                      "evolution_type", "title"):
+                      "evolution_type", "rewrite_type", "title"):
                 v = n.get(k)
                 if isinstance(v, str) and v.strip() and v.strip() not in cur:
                     cur.append(v.strip())
+            for v in n.values():
+                _walk(v, cur)
             ins = n.get("instruction") or n.get("指令")
             res = n.get("response") or n.get("响应") or n.get("回答")
             if isinstance(ins, str) and isinstance(res, str) and ins.strip():
-                records.append({
-                    "instruction": ins.strip(),
-                    "response": res.strip(),
-                    "category": " | ".join(cur),
-                })
-                return  # 已是数据对叶子节点，不再下钻
-            for v in n.values():
-                _walk(v, cur)
+                key = (ins.strip(), res.strip())
+                if key not in seen:
+                    seen.add(key)
+                    records.append({
+                        "instruction": key[0],
+                        "response": key[1],
+                        "category": " | ".join(cur),
+                    })
         elif isinstance(n, list):
             for it in n:
                 _walk(it, cats)
 
     records = []
+    seen = set()
     _walk(node, list(inherited or []))
     return records
 

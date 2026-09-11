@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-generate.py — 合成数据生成器（Self-Instruct / Evol-Instruct / Magpie）
+generate.py — 合成数据生成器（Self-Instruct / Evol-Instruct / Magpie / 种子改写增强）
 
 读取 prompts/ 目录下对应范式的提示词模板，调用大模型生成合成指令数据，
 把模型输出的 JSON 规整为统一的 JSONL 数据集，每行一条：
@@ -8,7 +8,7 @@ generate.py — 合成数据生成器（Self-Instruct / Evol-Instruct / Magpie�
      "instruction": "...", "response": "..."}
 
 用法示例：
-    # 三个范式 × 所有已配置 Key 的模型
+    # 四个范式 × 所有已配置 Key 的模型
     python generate.py
 
     # 只跑指定范式 + 指定模型
@@ -33,8 +33,13 @@ import llm
 import jsonx
 import promptio
 
-PARADIGMS_ALL = ["self_instruct", "evol_instruct", "magpie"]
+PARADIGMS_ALL = ["self_instruct", "evol_instruct", "magpie", "seed_rewrite"]
 MODELS_ALL = list(llm.PROVIDERS.keys())
+
+# 解析体检阈值：平均每个数据对占多少字符算"不合常理"。
+# 正常数据对（指令 + 回答）约 200-400 字符；实测 magpie 一次返回 11262 字符 / 32 对 = 352。
+# 超过该阈值说明返回体量远大于解析出的数据量，多半是漏解析（见 jsonx.walk_pairs 注释）。
+SUSPICIOUS_CHARS_PER_PAIR = 800
 
 # 各范式无 --seeds 时的兜底种子：
 # evol_instruct / magpie 模板末尾自带默认种子（模板内执行），无需再给；
@@ -104,13 +109,15 @@ def generate_one(provider, paradigm, template, seeds, max_tokens, timeout=600):
 def main():
     _ensure_utf8_stdout()
     parser = argparse.ArgumentParser(
-        description="合成数据生成器：Self-Instruct / Evol-Instruct / Magpie")
+        description="合成数据生成器：Self-Instruct / Evol-Instruct / Magpie / 种子改写增强")
     parser.add_argument("--paradigm", nargs="+", choices=PARADIGMS_ALL,
                         default=PARADIGMS_ALL, help="生成范式（可多个）")
     parser.add_argument("--models", nargs="+", choices=MODELS_ALL,
                         default=MODELS_ALL, help="生成用模型（可多个，缺 Key 自动跳过）")
     parser.add_argument("--seeds", default=None,
-                        help="种子指令，多个用 | 分隔；不给则用模板自带/内置默认种子")
+                        help="种子指令，多个用 | 分隔；不给则用模板自带/内置默认种子。"
+                             "注意：seed_rewrite 模板自带的是『指令+回答』数据对，"
+                             "此处传入的只是纯指令（回答由模型生成）")
     parser.add_argument("--max-tokens", type=int, default=16384,
                         help="单次生成最大 token 数（默认 16384；推理模型的思维链也占用该预算）")
     parser.add_argument("--timeout", type=int, default=600,
@@ -155,8 +162,8 @@ def main():
             if args.dry_run:
                 messages = build_messages(paradigm, template, eff_seeds)
                 user_text = messages[1]["content"]
-                print(f"{tag} 提示词 {len(user_text)} 字符，种子 "
-                      f"{len(eff_seeds) if eff_seeds else 0} 条（模板内置）。开头预览：")
+                seed_src = f"--seeds 指定 {len(eff_seeds)} 条" if eff_seeds else "模板内置"
+                print(f"{tag} 提示词 {len(user_text)} 字符，种子：{seed_src}。开头预览：")
                 print("    " + user_text[:220].replace("\n", " "))
                 continue
             try:
@@ -187,7 +194,13 @@ def main():
                     f.write(json.dumps(line, ensure_ascii=False) + "\n")
                     added += 1
             total_added += added
-            stats.append(f"{tag} 返回 {len(raw)} 字符 → 解析 {len(pairs)} 对 → 新增 {added} 对")
+            stat_line = f"{tag} 返回 {len(raw)} 字符 → 解析 {len(pairs)} 对 → 新增 {added} 对"
+            # 返回体量与解析出的数据量严重不匹配时给出提示，避免丢数据无声无息
+            per_pair = len(raw) // max(len(pairs), 1)
+            if per_pair > SUSPICIOUS_CHARS_PER_PAIR:
+                stat_line += (f"  ⚠ 平均每对 {per_pair} 字符，远超常理"
+                              f"（阈值 {SUSPICIOUS_CHARS_PER_PAIR}），疑似漏解析")
+            stats.append(stat_line)
 
     # 汇总输出
     print("\n==================== 生成结果汇总 ====================")
