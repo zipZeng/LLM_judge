@@ -32,6 +32,7 @@ synthesis/
 ├── .env.example       # API Key 配置示例（复制为 .env 填写）
 ├── data/syn/          # 自动生成：数据集 JSONL / 错误日志 / raw_<ts>/ 模型原始输出
 ├── data/compare/<ts>/ # 自动生成：每家原始数据 + 每位评审报告 + summary.json
+│   └── 20260911_104142/  # ★ 唯一入库的一份（演示 --from-report 用）
 ├── data/export/       # 自动生成：精选数据集 + DATA_CARD_<ts>.md + 剔除明细
 └── README.md
 ```
@@ -161,6 +162,11 @@ python compare_models.py --timeout 900        # 网络慢时加大读超时（--
 python compare_models.py --from-report data/compare/20260911_104142
 python compare_models.py --from-report data/compare/20260911_104142/summary.json
 ```
+
+> **这份存档已随仓库交付**（`data/compare/20260911_104142/`，64 KB），所以
+> clone 下来就能直接跑上面这条命令 —— 已在全新 clone、无 `.env` 的环境实测 0.434 秒。
+> 其余运行产物（`data/syn/`、以后新跑的 compare 报告）仍不入库，
+> `.gitignore` 只放行了这一个时间戳目录。
 
 - 传目录或 `summary.json` 文件路径都可以；
 - **不调用任何 API、不写入任何文件**，也不需要 `.env` —— 该分支在任何 Key 校验
