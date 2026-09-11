@@ -83,14 +83,15 @@ def build_messages(paradigm, template, seeds):
     ]
 
 
-def generate_one(provider, paradigm, template, seeds, max_tokens):
+def generate_one(provider, paradigm, template, seeds, max_tokens, timeout=600):
     """调用单个模型生成一轮合成数据。
 
     返回 (pairs, raw)：pairs 为展平后的数据对列表，raw 为模型原始输出。
     解析失败时抛 ValueError，由调用方记入错误日志。
     """
     messages = build_messages(paradigm, template, seeds)
-    raw = llm.call_chat(provider, messages, temperature=0.8, max_tokens=max_tokens)
+    raw = llm.call_chat(provider, messages, temperature=0.8,
+                        max_tokens=max_tokens, timeout=timeout)
     obj = jsonx.extract_json(raw)
     if obj is None:
         raise ValueError(f"输出中未解析出合法 JSON。片段：{raw[:200]}...")
@@ -110,8 +111,11 @@ def main():
                         default=MODELS_ALL, help="生成用模型（可多个，缺 Key 自动跳过）")
     parser.add_argument("--seeds", default=None,
                         help="种子指令，多个用 | 分隔；不给则用模板自带/内置默认种子")
-    parser.add_argument("--max-tokens", type=int, default=8192,
-                        help="单次生成最大 token 数（默认 8192，若平台上限较低请调小）")
+    parser.add_argument("--max-tokens", type=int, default=16384,
+                        help="单次生成最大 token 数（默认 16384；推理模型的思维链也占用该预算）")
+    parser.add_argument("--timeout", type=int, default=600,
+                        help="单次调用读超时秒数（默认 600；推理模型生成大 JSON 较慢，"
+                             "实测 GLM/Qwen 单次约 250s，勿低于 300）")
     parser.add_argument("--output-dir", default=str(Path(__file__).resolve().parent / "data" / "syn"),
                         help="输出目录（默认 data/syn）")
     parser.add_argument("--dry-run", action="store_true",
@@ -157,7 +161,7 @@ def main():
                 continue
             try:
                 pairs, raw = generate_one(model, paradigm, template, eff_seeds,
-                                          args.max_tokens)
+                                          args.max_tokens, args.timeout)
             except Exception as e:
                 print(f"{tag} ✗ 失败：{e}", flush=True)
                 with open(err_path, "a", encoding="utf-8") as f:

@@ -119,11 +119,25 @@ def call_chat(provider, messages, temperature=0.8, max_tokens=8192,
             resp = requests.post(p["url"], headers=headers, json=payload, timeout=timeout)
             if resp.status_code == 200:
                 data = resp.json()
-                return data["choices"][0]["message"]["content"].strip()
-            if 400 <= resp.status_code < 500 and resp.status_code != 429:
+                choice = data["choices"][0]
+                text = (choice.get("message", {}).get("content") or "").strip()
+                # 截断与空响应都是 token 预算不足的确定性结果，同样预算下重试必然复现，
+                # 故与 4xx 一样直接抛出，把可操作的提示交给调用方，不浪费重试时间
+                if choice.get("finish_reason") == "length":
+                    # 推理模型的思维链同样吃 token 预算，预算不足时正文被截断成半截 JSON
+                    raise RuntimeError(
+                        f"输出被 max_tokens={max_tokens} 截断（finish_reason=length），"
+                        f"请调大 --max-tokens 或减少单次生成数量")
+                if not text:
+                    raise RuntimeError(
+                        f"模型返回空内容（finish_reason={choice.get('finish_reason')}），"
+                        f"推理模型可能是思维链占满 token 预算，请调大 --max-tokens")
+                return text
+            elif 400 <= resp.status_code < 500 and resp.status_code != 429:
                 # 4xx（除限流外）多为参数/Key 错误，重试无意义，直接抛出
                 raise RuntimeError(f"HTTP {resp.status_code}：{resp.text[:300]}")
-            last_err = f"HTTP {resp.status_code}：{resp.text[:200]}"
+            else:
+                last_err = f"HTTP {resp.status_code}：{resp.text[:200]}"
         except requests.exceptions.RequestException as e:
             last_err = str(e)
         wait = 3 * attempt

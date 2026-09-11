@@ -65,10 +65,17 @@ python generate.py --dry-run
 ```
 
 参数：`--paradigm`（self_instruct/evol_instruct/magpie）、`--models`（deepseek/glm/qwen）、
-`--seeds`、`--max-tokens`（默认 8192）、`--output-dir`。
+`--seeds`、`--max-tokens`（默认 16384）、`--timeout`（默认 600，单次调用读超时秒数）、
+`--output-dir`。
 
 **容错设计**：模型输出带 ```json 围栏、前后废话、键名漂移（如"指令/响应"）都能解析；
 某次调用失败记入 `data/syn/errors_<ts>.log` 并继续，不中断整批。
+
+**推理模型适配（两个脚本均适用）**：GLM-5.3 / Qwen3.6 的思维链写在 `reasoning_content`，
+**同样消耗 `max_tokens` 预算**，且单次大 JSON 生成实测约 250 秒。故 `--max-tokens` 默认
+16384、`--timeout` 默认 600 秒（勿低于 300）。预算不足时正文会被截断成半截 JSON，
+`llm.py` 会检测 `finish_reason=length` 与空响应并直接报错提示调大预算 —— 同预算下重试
+必然复现，故不再浪费 3 次重试；网络慢时可 `--timeout 900`。
 
 ## 2. 模型对比 compare_models.py
 
@@ -89,6 +96,7 @@ python compare_models.py --per-seed 3         # 加大样本量
 python compare_models.py --models glm qwen    # 只对比部分生成模型
 python compare_models.py --judges deepseek glm
 python compare_models.py --dry-run
+python compare_models.py --timeout 900        # 网络慢时加大读超时（--max-tokens 见上节）
 ```
 
 输出到 `data/compare/<时间戳>/`：

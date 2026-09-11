@@ -101,10 +101,11 @@ def build_gen_message(seeds, per_seed):
     ]
 
 
-def generate_items(provider, seeds, per_seed, max_tokens):
+def generate_items(provider, seeds, per_seed, max_tokens, timeout=600):
     """让 provider 模型按种子生成数据对；返回 items 列表（失败抛异常）。"""
     messages = build_gen_message(seeds, per_seed)
-    raw = llm.call_chat(provider, messages, temperature=0.7, max_tokens=max_tokens)
+    raw = llm.call_chat(provider, messages, temperature=0.7,
+                        max_tokens=max_tokens, timeout=timeout)
     obj = jsonx.extract_json(raw)
     if obj is None:
         raise ValueError(f"生成输出未解析出合法 JSON。片段：{raw[:200]}...")
@@ -180,8 +181,11 @@ def main():
                         default=COMPARE_MODELS, help="担任评审的模型（默认三者互评）")
     parser.add_argument("--per-seed", type=int, default=2,
                         help="每家生成模型对每条种子的生成对数（默认 2，共 种子数×2 条）")
-    parser.add_argument("--max-tokens", type=int, default=8192,
-                        help="单次调用最大 token 数（默认 8192）")
+    parser.add_argument("--max-tokens", type=int, default=16384,
+                        help="单次调用最大 token 数（默认 16384；推理模型的思维链也占用该预算）")
+    parser.add_argument("--timeout", type=int, default=600,
+                        help="单次调用读超时秒数（默认 600；推理模型生成大 JSON 较慢，"
+                             "实测 GLM/Qwen 单次约 250s，勿低于 300）")
     parser.add_argument("--output-dir",
                         default=str(Path(__file__).resolve().parent / "data" / "compare"),
                         help="输出目录（默认 data/compare）")
@@ -218,7 +222,8 @@ def main():
             datasets[m] = []
             continue
         try:
-            items = generate_items(m, seeds, args.per_seed, args.max_tokens)
+            items = generate_items(m, seeds, args.per_seed, args.max_tokens,
+                                   args.timeout)
         except Exception as e:
             print(f"[生成 {m}] ✗ 失败：{e}")
             continue
@@ -242,7 +247,8 @@ def main():
             print(f"[dry-run] 评审 {j} 提示词 {len(msgs[1]['content'])} 字符")
             continue
         try:
-            raw = llm.call_chat(j, msgs, temperature=0.2, max_tokens=args.max_tokens)
+            raw = llm.call_chat(j, msgs, temperature=0.2,
+                                max_tokens=args.max_tokens, timeout=args.timeout)
         except Exception as e:
             print(f"[评审 {j}] ✗ 失败：{e}")
             continue
