@@ -330,6 +330,11 @@ def main():
     out_dir = Path(args.output_dir) / ts
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    # 进度计数：生成 + 评审的全部调用，用来显示"第几次/共几次"。
+    # 推理模型单次 4–7.5 分钟，没有进度的话现场分不清在跑还是卡死。
+    n_calls = 0
+    planned_calls = len(gen_models) + len(judge_models)
+
     # ---------- 生成阶段 ----------
     datasets = {}
     for m in gen_models:
@@ -338,9 +343,11 @@ def main():
             print(f"[dry-run] {m} 生成提示词 {len(msgs[1]['content'])} 字符")
             datasets[m] = []
             continue
+        n_calls += 1
         try:
-            items = generate_items(m, seeds, args.per_seed, args.max_tokens,
-                                   args.timeout)
+            with llm.long_call(f"[{n_calls}/{planned_calls}] [生成 {m}]"):
+                items = generate_items(m, seeds, args.per_seed, args.max_tokens,
+                                       args.timeout)
         except Exception as e:
             print(f"[生成 {m}] ✗ 失败：{e}")
             continue
@@ -363,9 +370,11 @@ def main():
         if args.dry_run:
             print(f"[dry-run] 评审 {j} 提示词 {len(msgs[1]['content'])} 字符")
             continue
+        n_calls += 1
         try:
-            raw = llm.call_chat(j, msgs, temperature=0.2,
-                                max_tokens=args.max_tokens, timeout=args.timeout)
+            with llm.long_call(f"[{n_calls}/{planned_calls}] [评审 {j}]"):
+                raw = llm.call_chat(j, msgs, temperature=0.2,
+                                    max_tokens=args.max_tokens, timeout=args.timeout)
         except Exception as e:
             print(f"[评审 {j}] ✗ 失败：{e}")
             continue

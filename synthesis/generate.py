@@ -183,6 +183,9 @@ def main():
     total_calls = 0
     seen = set()
     stats = []  # 每轮结果的统计，便于最后汇总打印
+    # 计划的总调用数，只为进度显示"第几次/共几次"（推理模型单次 4–7.5 分钟，
+    # 不显示进度的话现场分不清在跑还是卡死）
+    planned = len(args.paradigm) * len(models)
 
     for paradigm in args.paradigm:
         template = promptio.load_prompt(paradigm)
@@ -202,8 +205,9 @@ def main():
                 print("    " + user_text[:220].replace("\n", " "))
                 continue
             try:
-                pairs, raw = generate_one(model, paradigm, template, eff_seeds,
-                                          args.max_tokens, args.timeout)
+                with llm.long_call(f"[{total_calls}/{planned}] {tag}"):
+                    pairs, raw = generate_one(model, paradigm, template, eff_seeds,
+                                              args.max_tokens, args.timeout)
             except Exception as e:
                 # 失败的原始输出排查价值最高，尽量留下（llm 层就失败的没有 raw）
                 failed_raw = getattr(e, "raw", "")

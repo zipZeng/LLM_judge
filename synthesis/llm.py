@@ -17,8 +17,10 @@ API Key 读取顺序（依次尝试）：
 依赖：requests、python-dotenv（pip install requests python-dotenv）
 """
 
+import contextlib
 import os
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -94,6 +96,50 @@ def check_available(models):
         help_text = PROVIDERS[missing[0]]["key_help"]
         print(f"   请到 {help_text} 获取 Key，写入 .env（参考 .env.example）后重试。")
     return avail, missing
+
+
+# ============================ 长调用进度提示 ============================
+# 推理模型（GLM-5.3 / Qwen3.6）单次大 JSON 生成实测 4–7.5 分钟，这期间控制台
+# 一个字都不动 —— 调试和演示时分不清"在跑"还是"卡死了"，很容易被手贱 Ctrl-C 掉。
+# 故在等待期间起一个后台线程定期打印已用时。放在 llm.py 是因为这里是所有 API
+# 调用的唯一收口，generate.py 和 compare_models.py 都能直接用。
+
+HEARTBEAT_SECONDS = 30
+
+
+@contextlib.contextmanager
+def long_call(tag, interval=HEARTBEAT_SECONDS):
+    """长调用进度提示。用法：
+
+        with llm.long_call(f"[{n}/{total}] {tag}"):
+            raw = llm.call_chat(...)
+
+    进入时打印一行"调用中"，等待期间每 interval 秒打印一次已用时，
+    退出时打印本次总用时。异常路径也会正常收尾（打印"中断"后原样抛出）。
+    """
+    print(f"{tag} 调用中…（推理模型单次可能 4–7.5 分钟，请勿中断）", flush=True)
+    t0 = time.monotonic()
+    stop = threading.Event()
+
+    def _tick():
+        # stop.wait 超时返回 False，被 set 唤醒返回 True —— 用 wait 而不是 sleep，
+        # 这样调用一结束线程立刻退出，不必等满一个 interval
+        while not stop.wait(interval):
+            print(f"{tag} ⏳ 已等待 {time.monotonic() - t0:.0f} 秒…", flush=True)
+
+    th = threading.Thread(target=_tick, daemon=True)
+    th.start()
+    try:
+        yield
+    except BaseException:
+        stop.set()
+        th.join(timeout=1)
+        print(f"{tag} 中断，用时 {time.monotonic() - t0:.1f} 秒", flush=True)
+        raise
+    else:
+        stop.set()
+        th.join(timeout=1)
+        print(f"{tag} 返回，用时 {time.monotonic() - t0:.1f} 秒", flush=True)
 
 
 def call_chat(provider, messages, temperature=0.8, max_tokens=8192,
