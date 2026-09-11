@@ -24,6 +24,7 @@ synthesis/
 ├── export.py          # 精选数据集导出 + 数据卡（去重 / 规则校验 / 统计）
 ├── test_jsonx.py      # jsonx 回归测试（python test_jsonx.py，不联网）
 ├── test_export.py     # export 回归测试（python test_export.py，不联网）
+├── test_compare.py    # compare 回归测试（python test_compare.py，不联网）
 ├── prompts/           # 提示词模板（5 个 .md，随本模块一起入库）
 │   ├── self_instruct.md / evol_instruct.md / magpie.md
 │   ├── seed_rewrite.md       # 种子改写增强（第四种范式）
@@ -140,6 +141,36 @@ python compare_models.py --timeout 900        # 网络慢时加大读超时（--
 `gen_*.jsonl`（每家原始生成数据，可直接二次加工）、`judge_*.json`（每位评审完整打分与
 理由）、`summary.json`（投票汇总与排名）；控制台打印 ASCII 对比表与结论。
 
+**汇总表的两列口径（看表前先看这里）：**
+
+| 列 | 含义 |
+|---|---|
+| 全量均分 | 三家评审给它的分的均值，**含自评** |
+| 非自评均分* | 只由**另外两家**评审打分，排除自评 |
+
+自评偏好 = **自评分 − 他人均分**，正数表示给自己打高分。注意不是
+「全量均分 − 非自评均分」——全量均分本身就含自评，那么减出来只有真值的一半左右
+（实测 09-11 DeepSeek 真值 −0.63，错法算出 −0.21）。`test_compare.py` 把这个公式钉死了。
+
+### 秒级重放 `--from-report`（演示用）
+
+现场真跑一次要 **25–45 分钟**（推理模型单次大 JSON 生成实测 4–7.5 分钟），
+等不起。拿已存档的 `summary.json` 重放同一张表是**秒级**的：
+
+```bash
+python compare_models.py --from-report data/compare/20260911_104142
+python compare_models.py --from-report data/compare/20260911_104142/summary.json
+```
+
+- 传目录或 `summary.json` 文件路径都可以；
+- **不调用任何 API、不写入任何文件**，也不需要 `.env` —— 该分支在任何 Key 校验
+  **之前**就返回，实测在无 `.env` 的机器上 0.406 秒跑完；
+- 重放与现跑**共用同一段渲染代码**（`render_report()`），所以两者是同一套口径，
+  不会出现"现场跑出来的和 PPT 上的对不上"。
+
+> 表里那个数就是当年真跑出来的数，重放不重算、不改写；
+> `summary.json` 缺失 `generated_counts` 的旧存档会从 `votes` 回推行的模型顺序。
+
 ## 3. 精选数据集导出 export.py
 
 ```bash
@@ -204,3 +235,6 @@ MinHash **只算 instruction、不把 response 拼进去**：种子改写增强�
   根治要靠生成侧跨批次去重，目前没有。
 - **数据集的「有效性」尚无实验支撑**：需求验证方案里的「精选 20% ≥ 全量 95%」
   还没跑。数据卡第 6 条已如实标注。
+- **长等待时没有进度反馈**：推理模型单次调用要 4–7.5 分钟，期间控制台不动，
+  看起来像卡死。目前靠 `--from-report` 绕开现场真跑，但真跑时仍缺进度输出
+  （第几次调用 / 共几次 / 已用时）。**尚未实现。**
