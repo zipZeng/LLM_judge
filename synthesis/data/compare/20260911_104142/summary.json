@@ -1,0 +1,54 @@
+{
+ "seeds": [
+  "将以下英文翻译成中文：Machine learning is a subset of artificial intelligence",
+  "用 Python 写一个快速排序算法",
+  "撰写一封正式的商务邮件",
+  "生成一个常见问题的FAQ",
+  "总结这篇文章的主要观点"
+ ],
+ "per_seed": 2,
+ "generated_counts": {
+  "deepseek": 10,
+  "glm": 10,
+  "qwen": 10
+ },
+ "judges": [
+  "deepseek",
+  "glm",
+  "qwen"
+ ],
+ "votes": {
+  "deepseek": {
+   "deepseek": 8.25,
+   "glm": 9.6,
+   "qwen": 8.4
+  },
+  "glm": {
+   "deepseek": 8.75,
+   "glm": 9.5,
+   "qwen": 7.75
+  },
+  "qwen": {
+   "deepseek": 9.0,
+   "glm": 9.5,
+   "qwen": 7.25
+  }
+ },
+ "ranking": [
+  {
+   "model": "glm",
+   "non_self_mean": 9.55,
+   "self_mean": 9.53
+  },
+  {
+   "model": "deepseek",
+   "non_self_mean": 8.88,
+   "self_mean": 8.67
+  },
+  {
+   "model": "qwen",
+   "non_self_mean": 8.07,
+   "self_mean": 7.8
+  }
+ ]
+}
