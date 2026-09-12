@@ -10,10 +10,11 @@
 
 一句话说明：**一个把「原始语料」变成「可直接用于训练的合格数据」的评估与转换流水线**——用三个云端模型（DeepSeek + 硅基流动 GLM-5.3 / Qwen3.6-35B-A3B）对每条语料在 4 个维度上迭代打分，按阈值过滤，最终输出 Alpaca / ShareGPT 标准训练格式。
 
-支持两种使用方式：
+支持三种使用方式：
 
-- **单条评估**：`eval_loop.py` 评估单条语料，输出 JSON 报告
-- **一键批量**：`pipeline.py` 批量处理语料文件，自动完成「评估 → 过滤转换 → 统计」全流程
+- **Web 界面（推荐）**：双击 `start.bat`，在浏览器里点按钮即可运行各功能，免记命令行
+- **单条评估**：`core/eval_loop.py` 评估单条语料，输出 JSON 报告
+- **一键批量**：`core/pipeline.py` 批量处理语料文件，自动完成「评估 → 过滤转换 → 统计」全流程
 
 ---
 
@@ -21,15 +22,22 @@
 
 ```
 LLM_judge/
+├── core/                     # 核心脚本
+│   ├── eval_loop.py          # 单条语料多模型迭代打分
+│   ├── pipeline.py           # 一键批量流水线
+│   ├── convert.py            # 数据格式转换（Alpaca / ShareGPT）
+│   └── visualize.py          # 评估结果统计可视化
+├── web/
+│   └── app.py                # Streamlit 可视化界面（浏览器点击运行各功能）
+├── synthesis/                # 合成数据生成与模型对比模块（见 synthesis/README.md）
 ├── data/
 │   └── judge_prompts.jsonl   # 4 条评判提示词（safety/accuracy/diversity/format）
 ├── reports/                  # 自动生成：所有评估报告
-├── eval_loop.py              # 单条语料多模型迭代打分
-├── convert.py                # 数据格式转换（Alpaca / ShareGPT）
-├── visualize.py              # 评估结果统计可视化
-├── pipeline.py               # 一键批量流水线
+├── history/                  # 自动生成：Web 界面操作历史
+├── start.bat                 # Windows 一键启动 Web 界面
 ├── .env                      # DeepSeek + 硅基流动 API Key（不提交到 Git）
 ├── .gitignore
+├── requirements.txt
 └── README.md
 ```
 
@@ -99,7 +107,7 @@ pipeline.py ──逐条调用 eval_loop.py（--rounds 1）──► reports/eva
 | 多样性 | `diversity` | 20% |
 | 格式规范性 | `format` | 15% |
 
-综合得分按上述权重对各维度均分加权求和得到（若有维度未评分，会按剩余权重自动归一化）。权重可在 `eval_loop.py` 顶部配置区的 `DIMENSION_WEIGHTS` 字典中修改。
+综合得分按上述权重对各维度均分加权求和得到（若有维度未评分，会按剩余权重自动归一化）。权重可在 `core/eval_loop.py` 顶部配置区的 `DIMENSION_WEIGHTS` 字典中修改。
 
 **评分标准（通用，各维度在提示词中略有细化）：**
 
@@ -142,7 +150,7 @@ pip install requests python-dotenv
 2. `.env` 已在 `.gitignore` 中忽略，不会被提交到 Git。
 3. 若未设置 Key，脚本会使用占位符 `YOUR_DEEPSEEK_KEY` / `YOUR_SILICONFLOW_KEY` 并给出友好提示，对应平台的请求会失败。
 
-其他可改配置（`eval_loop.py` 顶部）：`DEEPSEEK_URL`、`DEEPSEEK_MODEL`、`SILICONFLOW_URL`、`SILICONFLOW_MODELS`、`DIMENSION_WEIGHTS`、`TIMEOUT`、`MAX_RETRY` 等。
+其他可改配置（`core/eval_loop.py` 顶部）：`DEEPSEEK_URL`、`DEEPSEEK_MODEL`、`SILICONFLOW_URL`、`SILICONFLOW_MODELS`、`DIMENSION_WEIGHTS`、`TIMEOUT`、`MAX_RETRY` 等。
 
 ---
 
@@ -167,13 +175,13 @@ pip install requests python-dotenv
 
 ```bash
 # 命令行直接输入文本
-python eval_loop.py "深度学习是机器学习的一个分支，通过多层神经网络自动学习数据特征。"
+python core/eval_loop.py "深度学习是机器学习的一个分支，通过多层神经网络自动学习数据特征。"
 
 # 从文件读取
-python eval_loop.py --file corpus.txt
+python core/eval_loop.py --file corpus.txt
 
 # 指定轮数、阈值和输出文件
-python eval_loop.py --file corpus.txt --rounds 3 --threshold 5 --output reports/my_report.json
+python core/eval_loop.py --file corpus.txt --rounds 3 --threshold 5 --output reports/my_report.json
 ```
 
 **输出格式**（单个 JSON，含每轮详情与最终结论）：
@@ -215,8 +223,8 @@ python eval_loop.py --file corpus.txt --rounds 3 --threshold 5 --output reports/
 **示例：**
 
 ```bash
-python pipeline.py --input corpus.txt --format alpaca --threshold 5
-python pipeline.py --input corpus.txt --format sharegpt --rounds 2 --threshold 6
+python core/pipeline.py --input corpus.txt --format alpaca --threshold 5
+python core/pipeline.py --input corpus.txt --format sharegpt --rounds 2 --threshold 6
 ```
 
 **执行流程：**
@@ -243,8 +251,8 @@ python pipeline.py --input corpus.txt --format sharegpt --rounds 2 --threshold 6
 **示例：**
 
 ```bash
-python convert.py --input reports/_merged_reports.jsonl --output output.jsonl --format alpaca --threshold 5
-python convert.py --input reports/eval_report_0001.json --output out.jsonl --format sharegpt
+python core/convert.py --input reports/_merged_reports.jsonl --output output.jsonl --format alpaca --threshold 5
+python core/convert.py --input reports/eval_report_0001.json --output out.jsonl --format sharegpt
 ```
 
 **输出格式：**
@@ -270,9 +278,9 @@ python convert.py --input reports/eval_report_0001.json --output out.jsonl --for
 **示例：**
 
 ```bash
-python visualize.py --input reports/eval_report_0001.json
-python visualize.py --input reports/_merged_reports.jsonl --threshold 5
-python visualize.py --input "reports/eval_report_*.json" --threshold 6
+python core/visualize.py --input reports/eval_report_0001.json
+python core/visualize.py --input reports/_merged_reports.jsonl --threshold 5
+python core/visualize.py --input "reports/eval_report_*.json" --threshold 6
 ```
 
 **输出内容：**
@@ -317,23 +325,23 @@ DEEPSEEK_API_KEY=你的真实Key
 SILICONFLOW_API_KEY=你的硅基流动Key
 ```
 
-- `eval_loop.py` 启动时通过 `load_dotenv()` 自动读取 `.env`
+- `core/eval_loop.py` 启动时通过 `load_dotenv()` 自动读取项目根目录的 `.env`
 - 未配置时回退到占位符 `YOUR_DEEPSEEK_KEY` / `YOUR_SILICONFLOW_KEY`，并在控制台给出友好提示
 
 ### 7.3 如何修改评估维度
 
 1. 在 `data/judge_prompts.jsonl` 中新增/修改一条提示词（设置新的 `name`）。
-2. 同步修改 `eval_loop.py` 顶部的 `DIMENSIONS` 列表，加入新的维度名：
+2. 同步修改 `core/eval_loop.py` 顶部的 `DIMENSIONS` 列表，加入新的维度名：
 
    ```python
    DIMENSIONS = ["safety", "accuracy", "diversity", "format", "你新增的维度"]
    ```
 
-3. 若需在 `visualize.py` 中显示中文名，同步修改其 `DIM_LABELS` 字典。
+3. 若需在 `core/visualize.py` 中显示中文名，同步修改其 `DIM_LABELS` 字典。
 
 ### 7.4 如何修改维度权重
 
-`eval_loop.py` 顶部的 `DIMENSION_WEIGHTS` 字典定义各维度权重（总和建议为 1.0）：
+`core/eval_loop.py` 顶部的 `DIMENSION_WEIGHTS` 字典定义各维度权重（总和建议为 1.0）：
 
 ```python
 DIMENSION_WEIGHTS = {
@@ -348,7 +356,7 @@ DIMENSION_WEIGHTS = {
 
 ### 7.5 如何添加新模型
 
-`eval_loop.py` 中模型以统一接口 `call(system_prompt, user_prompt) -> str` 注册在 `MODELS` 列表：
+`core/eval_loop.py` 中模型以统一接口 `call(system_prompt, user_prompt) -> str` 注册在 `MODELS` 列表：
 
 1. 写一个调用函数（参照 `call_deepseek` / `call_siliconflow`），返回模型原始输出文本：
 
@@ -379,10 +387,12 @@ DIMENSION_WEIGHTS = {
 | 文件 | 说明 |
 |------|------|
 | `data/judge_prompts.jsonl` | 4 条语料质量评判提示词（safety/accuracy/diversity/format） |
-| `eval_loop.py` | 单条语料多模型迭代打分脚本 |
-| `pipeline.py` | 一键批量流水线脚本 |
-| `convert.py` | 数据格式转换脚本（Alpaca/ShareGPT） |
-| `visualize.py` | 评估结果可视化统计脚本 |
+| `core/eval_loop.py` | 单条语料多模型迭代打分脚本 |
+| `core/pipeline.py` | 一键批量流水线脚本 |
+| `core/convert.py` | 数据格式转换脚本（Alpaca/ShareGPT） |
+| `core/visualize.py` | 评估结果可视化统计脚本 |
+| `web/app.py` | Streamlit 可视化界面 |
+| `synthesis/` | 合成数据生成与模型对比模块（见 `synthesis/README.md`） |
 | `.env` | DeepSeek + 硅基流动 API Key（不提交到 Git） |
 | `README.md` | 本文档 |
 
@@ -391,7 +401,7 @@ DIMENSION_WEIGHTS = {
 ## 9. 常见问题
 
 **Q1：硅基流动请求返回 401 或报「API Key 仍是占位符」？**
-A：请在 `.env` 中正确设置 `SILICONFLOW_API_KEY`（在 siliconflow.cn 获取），并确认模型 ID 正确（见 `eval_loop.py` 顶部 `SILICONFLOW_MODELS`）。若 Key 未填写，脚本会使用占位符并给出提醒。
+A：请在 `.env` 中正确设置 `SILICONFLOW_API_KEY`（在 siliconflow.cn 获取），并确认模型 ID 正确（见 `core/eval_loop.py` 顶部 `SILICONFLOW_MODELS`）。若 Key 未填写，脚本会使用占位符并给出提醒。
 
 **Q2：DeepSeek 返回 401 或报「API Key 仍是占位符」？**
 A：请在项目根目录的 `.env` 文件中正确设置 `DEEPSEEK_API_KEY`（在 DeepSeek 开放平台获取），并确认账户有可用额度。若 `.env` 不存在或 Key 未填写，脚本会使用占位符并给出提醒。

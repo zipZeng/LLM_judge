@@ -23,10 +23,13 @@ import subprocess
 import sys
 import tempfile
 
+# 项目根目录（本脚本位于 core/ 下，取上一级）
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
 # 调用子脚本所用的 Python 解释器；用 sys.executable 保证与本脚本处于同一环境（含 requests）
 PYTHON = sys.executable or "python"
 
-REPORTS_DIR = "reports"
+REPORTS_DIR = os.path.join(PROJECT_ROOT, "reports")
 MERGED_REPORTS = os.path.join(REPORTS_DIR, "_merged_reports.jsonl")
 
 
@@ -73,7 +76,7 @@ def evaluate_corpora(corpora, rounds):
 
             report_path = os.path.join(REPORTS_DIR, f"eval_report_{idx:04d}.json")
             cmd = [
-                PYTHON, "eval_loop.py",
+                PYTHON, os.path.join(PROJECT_ROOT, "core", "eval_loop.py"),
                 "--file", tmp_path,
                 "--rounds", str(rounds),
                 "-o", report_path,
@@ -170,10 +173,10 @@ def main():
     merged_path = merge_reports(reports)
 
     # 5. 转换为训练格式
-    output_path = f"output_{args.format}.jsonl"
+    output_path = os.path.join(PROJECT_ROOT, f"output_{args.format}.jsonl")
     print(f"\n正在转换为 {args.format} 格式...", flush=True)
     conv = subprocess.run([
-        PYTHON, "convert.py",
+        PYTHON, os.path.join(PROJECT_ROOT, "core", "convert.py"),
         "--input", merged_path,
         "--output", output_path,
         "--format", args.format,
@@ -185,7 +188,7 @@ def main():
     # 6. 统计可视化
     print("\n正在生成统计报告...\n", flush=True)
     vis = subprocess.run([
-        PYTHON, "visualize.py",
+        PYTHON, os.path.join(PROJECT_ROOT, "core", "visualize.py"),
         "--input", merged_path,
         "--threshold", str(args.threshold),
     ])
