@@ -8,9 +8,11 @@ env/
 
 # 评估报告与临时输出
 eval_report_*.json
+ui_eval_*.json
 *.jsonl
 !data/judge_prompts.jsonl
 *.backup.*
+history/
 
 # Editor / IDE
 .vscode/

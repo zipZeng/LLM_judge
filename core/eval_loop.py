@@ -30,7 +30,8 @@ from functools import partial
 import requests
 from dotenv import load_dotenv
 
-load_dotenv()
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+load_dotenv(os.path.join(PROJECT_ROOT, ".env"))
 
 # ============================ 配置区（按需修改） ============================
 
@@ -44,8 +45,8 @@ SILICONFLOW_URL = "https://api.siliconflow.cn/v1/chat/completions"
 SILICONFLOW_API_KEY = os.getenv("SILICONFLOW_API_KEY", "YOUR_SILICONFLOW_KEY")  # 从 .env 文件或环境变量读取
 SILICONFLOW_MODELS = ["zai-org/GLM-5.3", "Qwen/Qwen3.6-35B-A3B"]
 
-# 评估提示词文件（相对脚本运行目录）
-JUDGE_PROMPTS_PATH = "data/judge_prompts.jsonl"
+# 评估提示词文件（相对项目根目录）
+JUDGE_PROMPTS_PATH = os.path.join(PROJECT_ROOT, "data", "judge_prompts.jsonl")
 
 # 迭代轮数、合格阈值、单次请求超时（秒）、最大重试次数
 ROUNDS = 3
@@ -486,7 +487,9 @@ def main():
     }
 
     # ---- 5. 输出 ----
-    out_path = args.output or f"reports/eval_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+    out_path = args.output or os.path.join(
+        PROJECT_ROOT, "reports", f"eval_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+    )
     with open(out_path, "w", encoding="utf-8") as f:
         json.dump(report, f, ensure_ascii=False, indent=2)
 
