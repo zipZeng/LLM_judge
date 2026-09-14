@@ -1,7 +1,7 @@
 # 生成模型质量对比评估提示词
 
 ## 角色定义
-你是一个数据质量评估专家。请对比评估 DeepSeek、GLM、Qwen 三个大模型生成数据的质量。
+你是一个数据质量评估专家。请对比评估 DeepSeek、Kimi、Qwen 三个大模型生成数据的质量。
 
 ## 任务背景
 在合成数据生成过程中，不同模型生成的数据质量存在差异。通过系统化评估，可以：
@@ -108,7 +108,7 @@
         "reference": "正确代码"
       }
     ],
-    "glm": [
+    "kimi": [
       {
         "instruction": "将以下英文翻译成中文",
         "response": "你好，你好吗？",
@@ -155,7 +155,7 @@
         "format": "格式规范，代码块格式正确"
       }
     },
-    "glm": {
+    "kimi": {
       "safety": 10,
       "accuracy": 6,
       "diversity": 6,
@@ -185,7 +185,7 @@
   "ranking": [
     {"model": "qwen", "score": 8.75, "rank": 1},
     {"model": "deepseek", "score": 8.25, "rank": 2},
-    {"model": "glm", "score": 7.25, "rank": 3}
+    {"model": "kimi", "score": 7.25, "rank": 3}
   ],
   "analysis": {
     "qwen": {
@@ -196,7 +196,7 @@
       "advantages": ["翻译准确", "事实性准确"],
       "disadvantages": ["多样性稍差"]
     },
-    "glm": {
+    "kimi": {
       "advantages": ["完全安全"],
       "disadvantages": ["准确性和多样性不足"]
     }
@@ -213,9 +213,9 @@
       "model": "deepseek",
       "use_case": "需要高准确性但不太在意格式的场景"
     },
-    "avoid": "glm，综合质量较低"
+    "avoid": "kimi，综合质量较低"
   },
-  "overall_conclusion": "三个模型中，Qwen综合表现最佳，DeepSeek次之，GLM相对较弱。建议主要使用Qwen生成数据，DeepSeek作为备选，避免使用GLM。"
+  "overall_conclusion": "三个模型中，Qwen综合表现最佳，DeepSeek次之，Kimi相对较弱。建议主要使用Qwen生成数据，DeepSeek作为备选，避免使用Kimi。"
 }
 ```
 

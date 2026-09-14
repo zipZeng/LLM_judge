@@ -73,7 +73,7 @@ class _Boom(RuntimeError):
 
 
 def _run_ok():
-    with llm.long_call("[3/9] [生成 glm]", interval=60):
+    with llm.long_call("[3/9] [生成 kimi]", interval=60):
         pass
 
 
@@ -83,7 +83,7 @@ def _run_short():
 
 
 def _run_beat():
-    with llm.long_call("[2/2] [评审 glm]", interval=0.1):
+    with llm.long_call("[2/2] [评审 kimi]", interval=0.1):
         time.sleep(0.35)          # 应至少打 2 次
 
 
@@ -93,7 +93,7 @@ def _run_raise():
 
 
 def _run_keyboard():
-    with llm.long_call("[1/1] [生成 glm]", interval=60):
+    with llm.long_call("[1/1] [生成 kimi]", interval=60):
         raise KeyboardInterrupt
 
 
@@ -106,7 +106,7 @@ if err is not None:
     print(f"  [FAIL] 正常路径不应抛异常，实际抛出 {err!r}")
     FAIL += 1
 else:
-    check("进入时打印了 tag 与『调用中』", "[3/9] [生成 glm] 调用中…" in out, True)
+    check("进入时打印了 tag 与『调用中』", "[3/9] [生成 kimi] 调用中…" in out, True)
     check("提示里写明了可能耗时（避免被误当卡死 Ctrl-C）", "4–7.5 分钟" in out, True)
     check("退出时打印『返回，用时』", "返回，用时" in out, True)
     check("用时带秒数", "秒" in out.split("返回，用时")[1][:20], True)
@@ -123,7 +123,7 @@ check("块很快结束 → 不打心跳（日志不被刷屏）", "⏳" in out, 
 out, err = capture(_run_beat)
 n_beat = out.count("⏳")
 check("等待超过 interval → 打出心跳", n_beat >= 2, True)
-check("心跳里带 tag 与『已等待』", "[2/2] [评审 glm] ⏳ 已等待" in out, True)
+check("心跳里带 tag 与『已等待』", "[2/2] [评审 kimi] ⏳ 已等待" in out, True)
 
 
 print()
@@ -150,7 +150,7 @@ print("=" * 70)
 
 def _run_raise_thread():
     try:
-        with llm.long_call("[i/n] [生成 glm]", interval=0.05):
+        with llm.long_call("[i/n] [生成 kimi]", interval=0.05):
             time.sleep(0.12)
             raise _Boom("x")
     except _Boom:
@@ -164,7 +164,7 @@ def _run_many(fn):
 
 
 def _run_ok_once():
-    with llm.long_call("[i/n] [生成 glm]", interval=0.05):
+    with llm.long_call("[i/n] [生成 kimi]", interval=0.05):
         time.sleep(0.12)
 
 
@@ -184,7 +184,7 @@ _daemons = []
 
 
 def _run_daemon_probe():
-    with llm.long_call("[1/1] [生成 glm]", interval=0.05):
+    with llm.long_call("[1/1] [生成 kimi]", interval=0.05):
         time.sleep(0.12)
         _daemons[:] = [t.daemon for t in threading.enumerate()
                        if t is not threading.main_thread()]

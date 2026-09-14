@@ -16,10 +16,16 @@ generate.py — 合成数据生成器（Self-Instruct / Evol-Instruct / Magpie /
     python generate.py
 
     # 只跑指定范式 + 指定模型
-    python generate.py --paradigm self_instruct magpie --models deepseek glm
+    python generate.py --paradigm self_instruct magpie --models deepseek kimi
 
     # 追加自己的种子指令（多个用 | 分隔）
     python generate.py --paradigm magpie --seeds "帮我写一封请假邮件|总结一篇论文的核心观点"
+
+    # 每个范式/每个模型生成 3 条（默认 1 条）
+    python generate.py --paradigm magpie --count 3
+
+    # 快速模式：只用一个模型（首个硅基流动模型），条数用 --count 控制
+    python generate.py --fast --count 3
 
     # 不调用 API，只预览将发送的提示词
     python generate.py --dry-run
@@ -72,11 +78,13 @@ def _ensure_utf8_stdout():
             pass
 
 
-def build_messages(paradigm, template, seeds):
+def build_messages(paradigm, template, seeds, fast=False, count=1):
     """组装发送给模型的 system + user 消息。
 
     种子指令只作“补充说明”附在模板之后；若用户未给种子且模板自带
     （evol/magpie 的『开始执行』节有默认种子），则原样使用模板内容。
+    count 追加「恰好生成 N 条」的数量要求，覆盖模板内的默认数量描述；
+    fast=True 时追加“从简”约束（压缩单次产出，具体条数仍由 count 决定）。
     """
     user = template
     if seeds:
@@ -85,6 +93,12 @@ def build_messages(paradigm, template, seeds):
                 "一律以本补充为准，从模板第一步开始处理这些种子：\n"
         for i, s in enumerate(seeds, 1):
             user += f"{i}. {s}\n"
+    if fast:
+        user += "\n\n[快速模式] 本次从简：不要扩展过多变体，其余步骤从简。"
+    user += ("\n\n[数量要求（覆盖模板内所有数量描述）]\n"
+             f"本次请恰好生成 {count} 条指令-响应对（instruction + response），"
+             f"最终输出 JSON 展平后应共有 {count} 个数据对，不要多也不要少。"
+             "若模板里有「30-50 条」「4-6 个变体」等数量描述，一律以本条为准。")
     user += "\n\n请只输出最终 JSON 数据本体。"
     return [
         {"role": "system", "content": SYSTEM_GEN},
@@ -118,13 +132,13 @@ def save_raw(raw_dir, paradigm, model, raw, failed=False):
     return path
 
 
-def generate_one(provider, paradigm, template, seeds, max_tokens, timeout=600):
+def generate_one(provider, paradigm, template, seeds, max_tokens, timeout=1800, fast=False, count=1):
     """调用单个模型生成一轮合成数据。
 
     返回 (pairs, raw)：pairs 为展平后的数据对列表，raw 为模型原始输出。
     解析失败时抛 GenerateError（异常对象上带 raw），由调用方落盘并记入错误日志。
     """
-    messages = build_messages(paradigm, template, seeds)
+    messages = build_messages(paradigm, template, seeds, fast=fast, count=count)
     raw = llm.call_chat(provider, messages, temperature=0.8,
                         max_tokens=max_tokens, timeout=timeout)
     obj = jsonx.extract_json(raw)
@@ -151,17 +165,29 @@ def main():
                              "此处传入的只是纯指令（回答由模型生成）")
     parser.add_argument("--max-tokens", type=int, default=16384,
                         help="单次生成最大 token 数（默认 16384；推理模型的思维链也占用该预算）")
-    parser.add_argument("--timeout", type=int, default=600,
-                        help="单次调用读超时秒数（默认 600；推理模型生成大 JSON 较慢，"
-                             "实测 GLM/Qwen 单次约 250s，勿低于 300）")
+    parser.add_argument("--timeout", type=int, default=1800,
+                        help="单次调用读超时秒数（默认 1800；推理模型生成大 JSON 较慢，"
+                             "Kimi/Qwen 推理可能更久，勿设太低）")
     parser.add_argument("--output-dir", default=str(Path(__file__).resolve().parent / "data" / "syn"),
                         help="输出目录（默认 data/syn）")
     parser.add_argument("--dry-run", action="store_true",
                         help="不调用模型，仅打印将发送的提示词长度与开头片段")
+    parser.add_argument("--fast", action="store_true",
+                        help="快速模式：只用一个模型（首个硅基流动模型），条数由 --count 控制")
+    parser.add_argument("--count", type=int, default=1,
+                        help="每个范式/每个模型生成的数据条数（默认 1）")
     parser.add_argument("--no-save-raw", action="store_true",
                         help="不把模型原始输出落盘（默认存到 data/syn/raw_<时间戳>/，"
                              "解析失败的那份带 .failed 后缀，便于事后回查）")
     args = parser.parse_args()
+
+    if args.count < 1:
+        sys.exit("错误：--count 必须 >= 1")
+
+    if args.fast:
+        # 快速模式：取 models.json 里 siliconflow.models 的第一个模型（无则退回 DeepSeek）
+        sf_keys = [k for k in llm.PROVIDERS if k != "deepseek"]
+        args.models = sf_keys[:1] or ["deepseek"]
 
     seeds = [s.strip() for s in args.seeds.split("|") if s.strip()] if args.seeds else None
 
@@ -198,7 +224,7 @@ def main():
             total_calls += 1
             tag = f"[{paradigm} / {model}]"
             if args.dry_run:
-                messages = build_messages(paradigm, template, eff_seeds)
+                messages = build_messages(paradigm, template, eff_seeds, fast=args.fast, count=args.count)
                 user_text = messages[1]["content"]
                 seed_src = f"--seeds 指定 {len(eff_seeds)} 条" if eff_seeds else "模板内置"
                 print(f"{tag} 提示词 {len(user_text)} 字符，种子：{seed_src}。开头预览：")
@@ -207,7 +233,8 @@ def main():
             try:
                 with llm.long_call(f"[{total_calls}/{planned}] {tag}"):
                     pairs, raw = generate_one(model, paradigm, template, eff_seeds,
-                                              args.max_tokens, args.timeout)
+                                              args.max_tokens, args.timeout,
+                                              fast=args.fast, count=args.count)
             except Exception as e:
                 # 失败的原始输出排查价值最高，尽量留下（llm 层就失败的没有 raw）
                 failed_raw = getattr(e, "raw", "")
@@ -240,6 +267,8 @@ def main():
                     added += 1
             total_added += added
             stat_line = f"{tag} 返回 {len(raw)} 字符 → 解析 {len(pairs)} 对 → 新增 {added} 对"
+            if len(pairs) < args.count:
+                stat_line += f"  ⚠ 请求 {args.count} 条，仅解析出 {len(pairs)} 条"
             # 返回体量与解析出的数据量严重不匹配时给出提示，避免丢数据无声无息
             per_pair = len(raw) // max(len(pairs), 1)
             if per_pair > SUSPICIOUS_CHARS_PER_PAIR:

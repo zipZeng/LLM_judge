@@ -57,25 +57,25 @@ def run_report(votes, models):
 
 # ============ 真实存档数据（原样抄自 summary.json 的 votes）============
 V0911 = {
-    "deepseek": {"deepseek": 8.25, "glm": 9.60, "qwen": 8.40},
-    "glm":      {"deepseek": 8.75, "glm": 9.50, "qwen": 7.75},
-    "qwen":     {"deepseek": 9.00, "glm": 9.50, "qwen": 7.25},
+    "deepseek": {"deepseek": 8.25, "kimi": 9.60, "qwen": 8.40},
+    "kimi":      {"deepseek": 8.75, "kimi": 9.50, "qwen": 7.75},
+    "qwen":     {"deepseek": 9.00, "kimi": 9.50, "qwen": 7.25},
 }
 V0910 = {
-    "deepseek": {"deepseek": 7.90, "glm": 8.85, "qwen": 8.60},
-    "glm":      {"deepseek": 8.25, "glm": 9.00, "qwen": 8.50},
-    "qwen":     {"deepseek": 8.50, "glm": 9.75, "qwen": 8.75},
+    "deepseek": {"deepseek": 7.90, "kimi": 8.85, "qwen": 8.60},
+    "kimi":      {"deepseek": 8.25, "kimi": 9.00, "qwen": 8.50},
+    "qwen":     {"deepseek": 8.50, "kimi": 9.75, "qwen": 8.75},
 }
-MODELS = ["deepseek", "glm", "qwen"]
+MODELS = ["deepseek", "kimi", "qwen"]
 
 print("=" * 70)
 print("A. 自评偏好公式 —— 必须是「自评分 − 他人均分」")
 print("=" * 70)
 rd, out = run_report(V0911, MODELS)
-# 期望值来自交接文档记录的实测：DeepSeek −0.63 / GLM −0.05 / Qwen −0.82
+# 期望值来自交接文档记录的实测：DeepSeek −0.63 / Kimi −0.05 / Qwen −0.82
 pref = {g: round(ss - nsm, 2) for g, nsm, allm, ss in rd}
 check("09-11 DeepSeek 自评偏好 = −0.63", pref["deepseek"], -0.63)
-check("09-11 GLM 自评偏好 = −0.05", pref["glm"], -0.05)
+check("09-11 Kimi 自评偏好 = −0.05", pref["kimi"], -0.05)
 check("09-11 Qwen 自评偏好 = −0.82", pref["qwen"], -0.82)
 check("打印的自评偏好与计算一致（含自评分）",
       "DeepSeek\t-0.63（自评 8.25）" in out, True)
@@ -83,7 +83,7 @@ check("打印的自评偏好与计算一致（含自评分）",
 rd2, _ = run_report(V0910, MODELS)
 pref2 = {g: round(ss - nsm, 2) for g, nsm, allm, ss in rd2}
 check("09-10 DeepSeek 自评偏好 = −0.48", pref2["deepseek"], -0.48)
-check("09-10 GLM 自评偏好 = −0.30", pref2["glm"], -0.30)
+check("09-10 Kimi 自评偏好 = −0.30", pref2["kimi"], -0.30)
 check("09-10 Qwen 自评偏好 = +0.20（唯一为正的一次）", pref2["qwen"], 0.20)
 
 # 反例：确认错法（全量 − 非自评）会给出不同的值，否则这个测试是空的
@@ -130,7 +130,7 @@ print("D. load_summary 与重放入口")
 print("=" * 70)
 tmp = Path(tempfile.mkdtemp(prefix="cmtest_"))
 summary = {"seeds": ["a", "b"], "per_seed": 2,
-           "generated_counts": {"deepseek": 4, "glm": 4, "qwen": 4},
+           "generated_counts": {"deepseek": 4, "kimi": 4, "qwen": 4},
            "judges": MODELS, "votes": V0911}
 (tmp / "summary.json").write_text(json.dumps(summary, ensure_ascii=False),
                                   encoding="utf-8")
@@ -192,7 +192,7 @@ old = {"judges": MODELS, "votes": V0911}
 gen = list((old.get("generated_counts") or {}).keys()) \
     or list({g for v in old["votes"].values() for g in v})
 check("旧存档缺 generated_counts 时可回退出生成模型",
-      sorted(gen), ["deepseek", "glm", "qwen"])
+      sorted(gen), ["deepseek", "kimi", "qwen"])
 
 
 print()

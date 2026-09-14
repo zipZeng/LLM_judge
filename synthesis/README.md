@@ -6,7 +6,7 @@
 1. **合成数据生成**（`generate.py`）—— 按 Self-Instruct / Evol-Instruct / Magpie /
    种子改写增强 四种范式生成指令-响应对，输出统一 JSONL 数据集。
 2. **评价生成语料的大模型**（`compare_models.py`）—— 同一批种子让
-   DeepSeek / GLM-5.3 / Qwen3.6 各生成一批数据，再由三者互评（LLM-as-Judge），
+   DeepSeek / Kimi-K2.7-Code / Qwen3.6 各生成一批数据，再由三者互评（LLM-as-Judge），
    对比“谁生成的数据质量更高”，并给出排除自评的公平口径。
 3. **精选数据集导出与数据卡**（`export.py`）—— 汇总全部分批生成结果，去重、
    规则校验、输出统一精选集，并据实生成数据卡（来源/构成/已知偏差/适用场景）。
@@ -52,15 +52,15 @@ pip install requests python-dotenv
 
 ```
 DEEPSEEK_API_KEY=sk-xxx          # DeepSeek 开放平台
-SILICONFLOW_API_KEY=sk-xxx       # 硅基流动（GLM-5.3 / Qwen3.6 共用）
+SILICONFLOW_API_KEY=sk-xxx       # 硅基流动（Kimi-K2.7-Code / Qwen3.6 共用）
 ```
 
 Key 读取优先级：`synthesis/.env` → `git_hub/LLM_judge/.env`（若存在，与评估项目共用）
 → 系统环境变量。缺 Key 的模型会被自动跳过并提示，不影响其他模型执行。
 `.env` 含密钥，请勿提交到 Git（已建议加入 .gitignore）。
 
-模型名/接口地址集中配置在 `llm.py` 的 `PROVIDERS` 表，若硅基流动模型 tag 变动，
-只改这一处即可。
+模型名/接口地址集中配置在项目根目录 `models.json`（DeepSeek 一条 + 硅基流动 models 数组），
+`llm.py` 运行时读取并动态构建 PROVIDERS 注册表；增删模型只改 `models.json` 即可。
 
 ## 1. 合成数据生成 generate.py
 
@@ -73,7 +73,7 @@ Key 读取优先级：`synthesis/.env` → `git_hub/LLM_judge/.env`（若存在�
 python generate.py
 
 # 指定范式与模型
-python generate.py --paradigm self_instruct magpie --models deepseek glm
+python generate.py --paradigm self_instruct magpie --models deepseek kimi
 
 # 自定义种子指令（| 分隔；不给则用模板内置默认种子）
 python generate.py --paradigm magpie --seeds "帮我写一封请假邮件|总结一篇论文的核心观点"
@@ -83,8 +83,8 @@ python generate.py --dry-run
 ```
 
 参数：`--paradigm`（self_instruct/evol_instruct/magpie/**seed_rewrite**）、
-`--models`（deepseek/glm/qwen）、`--seeds`、`--max-tokens`（默认 16384）、
-`--timeout`（默认 600，单次调用读超时秒数）、`--output-dir`。
+`--models`（deepseek/kimi/qwen）、`--seeds`、`--max-tokens`（默认 16384）、
+`--timeout`（默认 1800，单次调用读超时秒数）、`--output-dir`。
 
 **四种范式的分工：**
 
@@ -111,20 +111,20 @@ python generate.py --dry-run
 JSONL 之后就看不出模型到底返回了什么（被 `max_tokens` 截断？键名漂移？结构不对？）。
 `--no-save-raw` 可关闭。演示时若不需要留档，加这个开关即可。
 
-**推理模型适配（两个脚本均适用）**：GLM-5.3 / Qwen3.6 的思维链写在 `reasoning_content`，
+**推理模型适配（两个脚本均适用）**：Kimi-K2.7-Code / Qwen3.6 的思维链写在 `reasoning_content`，
 **同样消耗 `max_tokens` 预算**，且单次大 JSON 生成实测约 250 秒。故 `--max-tokens` 默认
-16384、`--timeout` 默认 600 秒（勿低于 300）。预算不足时正文会被截断成半截 JSON，
+16384、`--timeout` 默认 1800 秒（勿低于 300）。预算不足时正文会被截断成半截 JSON，
 `llm.py` 会检测 `finish_reason=length` 与空响应并直接报错提示调大预算 —— 同预算下重试
-必然复现，故不再浪费 3 次重试；网络慢时可 `--timeout 900`。
+必然复现，故不再浪费 3 次重试；网络慢时可 `--timeout 3600`。
 
 **长调用进度提示（两个脚本均适用）**：一次调用要等 4–7.5 分钟，期间控制台一个字都不动，
 分不清是在跑还是卡死了。现在每次调用都会打印进度：
 
 ```
-[3/9] [magpie / glm] 调用中…（推理模型单次可能 4–7.5 分钟，请勿中断）
-[3/9] [magpie / glm] ⏳ 已等待 30 秒…
-[3/9] [magpie / glm] ⏳ 已等待 60 秒…
-[3/9] [magpie / glm] 返回，用时 251.3 秒
+[3/9] [magpie / kimi] 调用中…（推理模型单次可能 4–7.5 分钟，请勿中断）
+[3/9] [magpie / kimi] ⏳ 已等待 30 秒…
+[3/9] [magpie / kimi] ⏳ 已等待 60 秒…
+[3/9] [magpie / kimi] 返回，用时 251.3 秒
 ```
 
 `[第几次/共几次]` 覆盖整轮计划；心跳每 **30 秒**一次（不足 30 秒不打印，
@@ -136,9 +136,9 @@ JSONL 之后就看不出模型到底返回了什么（被 `max_tokens` 截断？
 
 四步流水线，全部按 `prompts/model_comparison.md` 设计：
 
-1. **生成**：同种子（默认模板附的 5 条）→ 三家各生成 `种子数 × --per-seed` 对；
-2. **组装**：按模板输入格式生成 `{"datasets": {deepseek:[...], glm:[...], qwen:[...]}}`；
-3. **互评**：deepseek / glm / qwen 各自按模板当评审，对四维打分、排名；
+1. **生成**：同种子（默认取模板附 5 条种子的前 2 条，`--seeds` 可调）→ 三家各生成 `种子数 × --per-seed` 对；
+2. **组装**：按模板输入格式生成 `{"datasets": {deepseek:[...], kimi:[...], qwen:[...]}}`；
+3. **互评**：deepseek / kimi / qwen 各自按模板当评审，对四维打分、排名；
 4. **汇总**：打印对比表 + 两种口径排名（全量均分 / **排除自评均分**）。
 
 > ⚠ 评审团恰是三家被评模型自身，“自己给自己打分”天然有偏。
@@ -146,12 +146,12 @@ JSONL 之后就看不出模型到底返回了什么（被 `max_tokens` 截断？
 > 报告建议以该口径排名为准 —— 这也是本脚本相比直接调用模板更严谨的地方。
 
 ```bash
-python compare_models.py                      # 默认：5 种子 × 2 对 × 3 家 = 各 10 对
-python compare_models.py --per-seed 3         # 加大样本量
-python compare_models.py --models glm qwen    # 只对比部分生成模型
-python compare_models.py --judges deepseek glm
+python compare_models.py                      # 默认：2 种子 × 3 对 × 3 家 = 各 6 对
+python compare_models.py --seeds 3 --per-seed 2  # 3 条种子，每条 2 对（更多样/更省时）
+python compare_models.py --models kimi qwen    # 只对比部分生成模型
+python compare_models.py --judges deepseek kimi
 python compare_models.py --dry-run
-python compare_models.py --timeout 900        # 网络慢时加大读超时（--max-tokens 见上节）
+python compare_models.py --timeout 3600        # 网络慢时加大读超时（--max-tokens 见上节）
 ```
 
 输出到 `data/compare/<时间戳>/`：

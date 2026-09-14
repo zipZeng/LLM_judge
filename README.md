@@ -8,7 +8,7 @@
 
 ## 1. 项目概述
 
-一句话说明：**一个把「原始语料」变成「可直接用于训练的合格数据」的评估与转换流水线**——用三个云端模型（DeepSeek + 硅基流动 GLM-5.3 / Qwen3.6-35B-A3B）对每条语料在 4 个维度上迭代打分，按阈值过滤，最终输出 Alpaca / ShareGPT 标准训练格式。
+一句话说明：**一个把「原始语料」变成「可直接用于训练的合格数据」的评估与转换流水线**——用三个云端模型（DeepSeek + 硅基流动 Kimi-K2.7-Code / Qwen3.6-35B-A3B）对每条语料在 4 个维度上迭代打分，按阈值过滤，最终输出 Alpaca / ShareGPT 标准训练格式。
 
 支持三种使用方式：
 
@@ -55,7 +55,7 @@ LLM_judge/
 │  eval_loop.py —— 多模型迭代打分                 │
 │  · 加载 data/judge_prompts.jsonl 评判提示词     │
 │  · 从 .env 读取 DeepSeek / 硅基流动 API Key     │
-│  · DeepSeek + GLM-5.3 + Qwen3.6-35B-A3B         │
+│  · DeepSeek + Kimi-K2.7-Code + Qwen3.6-35B-A3B         │
 │  · 4 维度 × 3 模型 × N 轮（默认 3 轮）           │
 └────────────────────────────────────────────────┘
    │
@@ -150,7 +150,7 @@ pip install requests python-dotenv
 2. `.env` 已在 `.gitignore` 中忽略，不会被提交到 Git。
 3. 若未设置 Key，脚本会使用占位符 `YOUR_DEEPSEEK_KEY` / `YOUR_SILICONFLOW_KEY` 并给出友好提示，对应平台的请求会失败。
 
-其他可改配置（`core/eval_loop.py` 顶部）：`DEEPSEEK_URL`、`DEEPSEEK_MODEL`、`SILICONFLOW_URL`、`SILICONFLOW_MODELS`、`DIMENSION_WEIGHTS`、`TIMEOUT`、`MAX_RETRY` 等。
+模型地址/模型名改在项目根目录 `models.json`（见 7.2 节）；其余可改配置（`core/eval_loop.py` 顶部）：`DIMENSION_WEIGHTS`、`TIMEOUT`、`MAX_RETRY` 等。
 
 ---
 
@@ -189,11 +189,11 @@ python core/eval_loop.py --file corpus.txt --rounds 3 --threshold 5 --output rep
 ```json
 {
   "meta": {"input_source": "file:corpus.txt", "text": "原始语料", "text_length": 42,
-           "models": ["DeepSeek(deepseek-chat)", "GLM-5.3（硅基流动）", "Qwen3.6-35B-A3B（硅基流动）"],
+           "models": ["DeepSeek(deepseek-chat)", "Kimi-K2.7-Code（硅基流动）", "Qwen3.6-35B-A3B（硅基流动）"],
            "rounds": 3, "threshold": 5.0, "generated_at": "..."},
   "rounds": [
     {"round": 1, "dimensions": {"safety": {"DeepSeek(deepseek-chat)": {"score": 8, "reason": "..."},
-                                            "GLM-5.3（硅基流动）": {"score": 7, "reason": "..."},
+                                            "Kimi-K2.7-Code（硅基流动）": {"score": 7, "reason": "..."},
                                             "Qwen3.6-35B-A3B（硅基流动）": {"score": 7, "reason": "..."}},
                                 "accuracy": {"..."}, "diversity": {"..."}, "format": {"..."}}},
     {"round": 2, "dimensions": {"..."}},
@@ -316,7 +316,48 @@ python core/visualize.py --input "reports/eval_report_*.json" --threshold 6
 - `prompt_template`：完整评判提示词，`{text}` 为待评估语料占位符，要求模型依次输出「精炼理由（20字以内）/ 完整分析 / 分数 `[[评分]]`」三部分
 - `output_format`：`"[[rating]]"`，脚本用正则 `\[\[(\d+)\]\]` 提取评分
 
-### 7.2 .env —— API Key 配置
+### 7.2 models.json —— 模型配置说明
+
+路径：`models.json`（项目根目录，随代码一起提交，不含任何密钥）。
+
+模型地址、模型名、Key 环境变量统一维护在这里；`core/eval_loop.py` 与 `synthesis/llm.py`
+运行时读取并动态构建模型列表，**代码里不写死具体模型名**。
+
+```json
+{
+  "deepseek": {
+    "url": "https://api.deepseek.com/v1/chat/completions",
+    "model": "deepseek-chat",
+    "api_key_env": "DEEPSEEK_API_KEY"
+  },
+  "siliconflow": {
+    "url": "https://api.siliconflow.cn/v1/chat/completions",
+    "api_key_env": "SILICONFLOW_API_KEY",
+    "models": [
+      "moonshotai/Kimi-K2.7-Code",
+      "Qwen/Qwen3.6-35B-A3B"
+    ]
+  }
+}
+```
+
+- `deepseek`：DeepSeek 官方接口，固定一条（URL / 模型名 / Key 环境变量名）。
+- `siliconflow.models`：硅基流动模型列表（数组）。**增删模型只需改这个数组**——把模型 ID 加进去、删掉或替换即可，无需改任何 Python 代码。
+
+**如何增删模型：**
+
+- 新增：在 `siliconflow.models` 数组里追加一行模型 ID。
+- 删除：从数组里去掉对应一行。
+- 替换：直接改掉对应的模型 ID 字符串。
+
+**补充说明：**
+
+- 模型键名由代码从模型 ID 自动派生（如 `moonshotai/Kimi-K2.7-Code` → `kimi-k2-7-code`），
+  用于命令行 `--models` / `--judges` 参数。
+- 若 `models.json` 不存在或解析失败，脚本会友好提示并**回退到仅 DeepSeek 的内置默认配置**。
+- `models.json` 不含密钥，因此**不加入 `.gitignore`**，随仓库一起提交；Key 仍放 `.env`（见 7.3 节）。
+
+### 7.3 .env —— API Key 配置
 
 路径：`.env`（项目根目录，已在 `.gitignore` 中忽略）
 
@@ -328,7 +369,7 @@ SILICONFLOW_API_KEY=你的硅基流动Key
 - `core/eval_loop.py` 启动时通过 `load_dotenv()` 自动读取项目根目录的 `.env`
 - 未配置时回退到占位符 `YOUR_DEEPSEEK_KEY` / `YOUR_SILICONFLOW_KEY`，并在控制台给出友好提示
 
-### 7.3 如何修改评估维度
+### 7.4 如何修改评估维度
 
 1. 在 `data/judge_prompts.jsonl` 中新增/修改一条提示词（设置新的 `name`）。
 2. 同步修改 `core/eval_loop.py` 顶部的 `DIMENSIONS` 列表，加入新的维度名：
@@ -339,7 +380,7 @@ SILICONFLOW_API_KEY=你的硅基流动Key
 
 3. 若需在 `core/visualize.py` 中显示中文名，同步修改其 `DIM_LABELS` 字典。
 
-### 7.4 如何修改维度权重
+### 7.5 如何修改维度权重
 
 `core/eval_loop.py` 顶部的 `DIMENSION_WEIGHTS` 字典定义各维度权重（总和建议为 1.0）：
 
@@ -354,9 +395,11 @@ DIMENSION_WEIGHTS = {
 
 修改对应数值即可调整各维度在综合得分中的占比（若有维度未评分，脚本会按剩余权重自动归一化）。
 
-### 7.5 如何添加新模型
+### 7.6 如何添加新模型
 
-`core/eval_loop.py` 中模型以统一接口 `call(system_prompt, user_prompt) -> str` 注册在 `MODELS` 列表：
+**硅基流动模型：直接改 `models.json`**（见 7.2 节），无需改代码。
+
+**新增其他厂商（进阶）**：接入 DeepSeek、硅基流动之外的平台才需要写代码：
 
 1. 写一个调用函数（参照 `call_deepseek` / `call_siliconflow`），返回模型原始输出文本：
 
@@ -366,16 +409,10 @@ DIMENSION_WEIGHTS = {
        ...
    ```
 
-2. 在 `MODELS` 列表中注册：
+2. 在 `core/eval_loop.py` 的 `MODELS` 列表末尾追加注册：
 
    ```python
-   from functools import partial
-
-   MODELS = [
-       {"key": "deepseek", "label": f"DeepSeek({DEEPSEEK_MODEL})", "call": call_deepseek},
-       {"key": "glm53", "label": "GLM-5.3（硅基流动）", "call": partial(call_siliconflow, model=SILICONFLOW_MODELS[0])},
-       {"key": "mymodel", "label": "MyModel", "call": call_my_model},
-   ]
+   MODELS.append({"key": "mymodel", "label": "MyModel", "call": call_my_model})
    ```
 
 评估循环会自动遍历 `MODELS` 中所有模型，无需改动其他逻辑。

@@ -6,7 +6,7 @@ eval_loop.py — 语料质量多模型迭代评估脚本
     1. 加载 data/judge_prompts.jsonl 中的 4 条评估提示词
        （safety / accuracy / diversity / format）
     2. 支持两种输入方式：命令行直接传入文本，或用 --file 读取文件
-    3. 核心流程：3 个模型（DeepSeek + 硅基流动 GLM-5.3 / Qwen3.6-35B-A3B）分别对 4 个维度打分，
+    3. 核心流程：多个模型（DeepSeek + 硅基流动的若干模型，见项目根目录 models.json）分别对 4 个维度打分，
        每轮汇总各方意见后发回修正，共迭代 3 轮
     4. 输出完整 JSON 评估报告（含每轮详情、各维度权重、加权综合得分、各轮得分变化）
 
@@ -33,17 +33,70 @@ from dotenv import load_dotenv
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 load_dotenv(os.path.join(PROJECT_ROOT, ".env"))
 
-# ============================ 配置区（按需修改） ============================
+# ============================ 模型配置（从 models.json 读取） ============================
+# 模型地址/模型名不再写死在代码里：项目根目录 models.json 统一维护
+# （DeepSeek 一条 + 硅基流动 models 数组）。增删模型只改 models.json；
+# 缺失/损坏时友好提示并回退到仅 DeepSeek 的内置默认。
 
-# DeepSeek 在线 API
-DEEPSEEK_URL = "https://api.deepseek.com/v1/chat/completions"
-DEEPSEEK_MODEL = "deepseek-chat"
-DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "YOUR_DEEPSEEK_KEY")  # 从 .env 文件或环境变量读取
+MODELS_CONFIG_PATH = os.path.join(PROJECT_ROOT, "models.json")
+
+_DEFAULT_MODELS = {
+    "deepseek": {
+        "url": "https://api.deepseek.com/v1/chat/completions",
+        "model": "deepseek-chat",
+        "api_key_env": "DEEPSEEK_API_KEY",
+    },
+    "siliconflow": {
+        "url": "https://api.siliconflow.cn/v1/chat/completions",
+        "api_key_env": "SILICONFLOW_API_KEY",
+        "models": [],
+    },
+}
+
+
+def _load_models_config():
+    """读取 models.json 返回 {deepseek, siliconflow}；缺失/损坏时回退默认（仅 DeepSeek）。"""
+    if os.path.isfile(MODELS_CONFIG_PATH):
+        try:
+            with open(MODELS_CONFIG_PATH, "r", encoding="utf-8") as f:
+                cfg = json.load(f)
+        except (OSError, json.JSONDecodeError) as e:
+            print(f"⚠ 读取 {MODELS_CONFIG_PATH} 失败（{e}），回退到内置默认配置（仅 DeepSeek）。",
+                  flush=True)
+            cfg = None
+    else:
+        print(f"⚠ 未找到 {MODELS_CONFIG_PATH}，回退到内置默认配置（仅 DeepSeek）。"
+              f"如需硅基流动模型，请创建 models.json（见 README「模型配置说明」）。", flush=True)
+        cfg = None
+
+    cfg = cfg or {}
+    ds = cfg.get("deepseek") or {}
+    sf = cfg.get("siliconflow") or {}
+    return {
+        "deepseek": {
+            "url": ds.get("url", _DEFAULT_MODELS["deepseek"]["url"]),
+            "model": ds.get("model", _DEFAULT_MODELS["deepseek"]["model"]),
+            "api_key_env": ds.get("api_key_env", _DEFAULT_MODELS["deepseek"]["api_key_env"]),
+        },
+        "siliconflow": {
+            "url": sf.get("url", _DEFAULT_MODELS["siliconflow"]["url"]),
+            "api_key_env": sf.get("api_key_env", _DEFAULT_MODELS["siliconflow"]["api_key_env"]),
+            "models": list(sf.get("models") or _DEFAULT_MODELS["siliconflow"]["models"]),
+        },
+    }
+
+
+_MODELS_CFG = _load_models_config()
+
+# DeepSeek 在线 API（地址/模型名来自 models.json，Key 来自 .env / 环境变量）
+DEEPSEEK_URL = _MODELS_CFG["deepseek"]["url"]
+DEEPSEEK_MODEL = _MODELS_CFG["deepseek"]["model"]
+DEEPSEEK_API_KEY = os.getenv(_MODELS_CFG["deepseek"]["api_key_env"], "YOUR_DEEPSEEK_KEY")
 
 # 硅基流动在线 API（OpenAI 兼容）
-SILICONFLOW_URL = "https://api.siliconflow.cn/v1/chat/completions"
-SILICONFLOW_API_KEY = os.getenv("SILICONFLOW_API_KEY", "YOUR_SILICONFLOW_KEY")  # 从 .env 文件或环境变量读取
-SILICONFLOW_MODELS = ["zai-org/GLM-5.3", "Qwen/Qwen3.6-35B-A3B"]
+SILICONFLOW_URL = _MODELS_CFG["siliconflow"]["url"]
+SILICONFLOW_API_KEY = os.getenv(_MODELS_CFG["siliconflow"]["api_key_env"], "YOUR_SILICONFLOW_KEY")
+SILICONFLOW_MODELS = _MODELS_CFG["siliconflow"]["models"]
 
 # 评估提示词文件（相对项目根目录）
 JUDGE_PROMPTS_PATH = os.path.join(PROJECT_ROOT, "data", "judge_prompts.jsonl")
@@ -194,13 +247,23 @@ def call_siliconflow(system_prompt, user_prompt, model):
         raise RuntimeError(f"硅基流动响应结构异常：{data}")
 
 
-# 三个模型的统一注册表（key 用于报告，label 用于展示，call 为统一调用函数）
-# 硅基流动的两个模型通过 partial 绑定各自的 model ID，保持 call(system_prompt, user_prompt) 统一签名
+def _model_key(model_id):
+    """从模型 ID 派生稳定短键：'moonshotai/Kimi-K2.7-Code' -> 'kimi-k2-7-code'。"""
+    return re.sub(r"[^0-9a-z]+", "-", model_id.rsplit("/", 1)[-1].lower()).strip("-")
+
+
+# 模型统一注册表（key 用于报告，label 用于展示，call 为统一调用函数）
+# DeepSeek 一条 + 硅基流动 N 条，全部从 models.json 动态构建；
+# 硅基流动模型通过 partial 绑定各自的 model ID，保持 call(system_prompt, user_prompt) 统一签名
 MODELS = [
     {"key": "deepseek", "label": f"DeepSeek({DEEPSEEK_MODEL})", "call": call_deepseek},
-    {"key": "glm53", "label": "GLM-5.3（硅基流动）", "call": partial(call_siliconflow, model=SILICONFLOW_MODELS[0])},
-    {"key": "qwen36", "label": "Qwen3.6-35B-A3B（硅基流动）", "call": partial(call_siliconflow, model=SILICONFLOW_MODELS[1])},
 ]
+for _mid in SILICONFLOW_MODELS:
+    MODELS.append({
+        "key": _model_key(_mid),
+        "label": f"{_mid.rsplit('/', 1)[-1]}（硅基流动）",
+        "call": partial(call_siliconflow, model=_mid),
+    })
 
 
 def extract_score(text):

@@ -2,12 +2,10 @@
 """
 llm.py — 云端大模型统一调用封装（OpenAI 兼容接口）
 
-供合成数据生成（generate.py）与生成模型对比（compare_models.py）共用，
-支持三家模型，与 git_hub/LLM_judge 的模型配置保持一致：
-
-    deepseek : DeepSeek 官方 API（deepseek-chat）
-    glm      : 硅基流动 SiliconFlow（zai-org/GLM-5.3）
-    qwen     : 硅基流动 SiliconFlow（Qwen/Qwen3.6-35B-A3B）
+供合成数据生成（generate.py）与生成模型对比（compare_models.py）共用。
+模型配置统一维护在项目根目录 models.json（DeepSeek 一条 + 硅基流动 N 条），
+运行时读取并动态构建 PROVIDERS 注册表 —— 代码里不写死具体模型名，
+增删模型只改 models.json（缺失时回退到仅 DeepSeek 的内置默认）。
 
 API Key 读取顺序（依次尝试）：
     1. 本目录 .env（DEEPSEEK_API_KEY / SILICONFLOW_API_KEY）
@@ -18,7 +16,9 @@ API Key 读取顺序（依次尝试）：
 """
 
 import contextlib
+import json
 import os
+import re
 import sys
 import threading
 import time
@@ -43,32 +43,79 @@ _judge_env = _HERE.parent / "git_hub" / "LLM_judge" / ".env"
 if _judge_env.exists():
     load_dotenv(_judge_env)
 
-# ============================ 模型注册表 ============================
-# 修改模型名/地址只需改这里（如硅基流动下线某模型后换成新 tag）
+# ============================ 模型注册表（从 models.json 读取） ============================
+# 模型名/地址不再写死在代码里：项目根目录 models.json 统一维护
+# （DeepSeek 一条 + 硅基流动 models 数组）。增删模型只改 models.json；
+# 缺失/损坏时友好提示并回退到仅 DeepSeek 的内置默认。
 
-PROVIDERS = {
-    "deepseek": {
-        "label": "DeepSeek(deepseek-chat)",
-        "url": "https://api.deepseek.com/v1/chat/completions",
-        "api_key_env": "DEEPSEEK_API_KEY",
-        "model": "deepseek-chat",
-        "key_help": "DeepSeek 开放平台 https://platform.deepseek.com",
-    },
-    "glm": {
-        "label": "GLM-5.3(zai-org/GLM-5.3)",
-        "url": "https://api.siliconflow.cn/v1/chat/completions",
-        "api_key_env": "SILICONFLOW_API_KEY",
-        "model": "zai-org/GLM-5.3",
-        "key_help": "硅基流动 https://cloud.siliconflow.cn",
-    },
-    "qwen": {
-        "label": "Qwen3.6(Qwen/Qwen3.6-35B-A3B)",
-        "url": "https://api.siliconflow.cn/v1/chat/completions",
-        "api_key_env": "SILICONFLOW_API_KEY",
-        "model": "Qwen/Qwen3.6-35B-A3B",
-        "key_help": "硅基流动 https://cloud.siliconflow.cn",
-    },
+_MODELS_CONFIG_PATH = _HERE.parent / "models.json"
+
+_DEFAULT_DEEPSEEK = {
+    "url": "https://api.deepseek.com/v1/chat/completions",
+    "model": "deepseek-chat",
+    "api_key_env": "DEEPSEEK_API_KEY",
 }
+
+
+def _slug(s):
+    """把模型 ID 的末段转成稳定短键：'Kimi-K2.7-Code' -> 'kimi-k2-7-code'。"""
+    return re.sub(r"[^0-9a-z]+", "-", s.lower()).strip("-")
+
+
+def _build_providers(config):
+    """把 models.json 的原始结构组装成 PROVIDERS 注册表。
+
+    config 为 None 表示回退：仅保留 DeepSeek，硅基流动模型列表为空。
+    """
+    cfg = config or {}
+    deepseek = cfg.get("deepseek") or _DEFAULT_DEEPSEEK
+    sf = cfg.get("siliconflow") or {}
+
+    providers = {
+        "deepseek": {
+            "label": "DeepSeek",
+            "url": deepseek.get("url", _DEFAULT_DEEPSEEK["url"]),
+            "api_key_env": deepseek.get("api_key_env", "DEEPSEEK_API_KEY"),
+            "model": deepseek.get("model", "deepseek-chat"),
+            "key_help": "DeepSeek 开放平台 https://platform.deepseek.com",
+        },
+    }
+    sf_url = sf.get("url")
+    sf_key = sf.get("api_key_env", "SILICONFLOW_API_KEY")
+    for model_id in sf.get("models") or []:
+        base = model_id.rsplit("/", 1)[-1]
+        key = _slug(base)
+        n = 2
+        while key in providers:  # 键名冲突时追加序号，保证稳定唯一
+            key = f"{_slug(base)}-{n}"
+            n += 1
+        providers[key] = {
+            "label": base,
+            "url": sf_url,
+            "api_key_env": sf_key,
+            "model": model_id,
+            "key_help": "硅基流动 https://cloud.siliconflow.cn",
+        }
+    return providers
+
+
+def _load_providers():
+    """读取项目根目录 models.json 构建 PROVIDERS；缺失/损坏时友好提示并回退。"""
+    config = None
+    if _MODELS_CONFIG_PATH.is_file():
+        try:
+            config = json.loads(_MODELS_CONFIG_PATH.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as e:
+            print(f"⚠ 读取 {_MODELS_CONFIG_PATH} 失败（{e}），回退到内置默认配置（仅 DeepSeek）。",
+                  flush=True)
+    else:
+        print(f"⚠ 未找到 {_MODELS_CONFIG_PATH}，回退到内置默认配置（仅 DeepSeek）。"
+              f"如需使用硅基流动模型，请创建 models.json（见 README「模型配置说明」）。",
+              flush=True)
+    return _build_providers(config)
+
+
+PROVIDERS = _load_providers()
 
 _PLACEHOLDERS = ("YOUR_DEEPSEEK_KEY", "YOUR_SILICONFLOW_KEY", "YOUR_API_KEY", "")
 
@@ -99,7 +146,7 @@ def check_available(models):
 
 
 # ============================ 长调用进度提示 ============================
-# 推理模型（GLM-5.3 / Qwen3.6）单次大 JSON 生成实测 4–7.5 分钟，这期间控制台
+# 推理模型（Kimi-K2.7-Code / Qwen3.6）单次大 JSON 生成实测 4–7.5 分钟，这期间控制台
 # 一个字都不动 —— 调试和演示时分不清"在跑"还是"卡死了"，很容易被手贱 Ctrl-C 掉。
 # 故在等待期间起一个后台线程定期打印已用时。放在 llm.py 是因为这里是所有 API
 # 调用的唯一收口，generate.py 和 compare_models.py 都能直接用。
@@ -143,7 +190,7 @@ def long_call(tag, interval=HEARTBEAT_SECONDS):
 
 
 def call_chat(provider, messages, temperature=0.8, max_tokens=8192,
-              timeout=120, max_retry=3):
+              timeout=1800, max_retry=3):
     """调用一次 chat 补全；成功返回回复文本（去首尾空白），失败抛 RuntimeError。"""
     p = PROVIDERS[provider]
     key = provider_key(provider)

@@ -1,21 +1,20 @@
 # -*- coding: utf-8 -*-
 """
-compare_models.py — 评价生成语料的大模型：DeepSeek / GLM / Qwen 生成质量横向对比
+compare_models.py — 评价生成语料的大模型：多模型生成质量横向对比
 
 按 prompts/model_comparison.md 的评估设计执行：
-    1. 使用同一组种子指令，分别让 deepseek / glm / qwen 各生成一批 指令-响应对
-    2. 按模板『输入格式』组装 {"datasets": {deepseek:[...], glm:[...], qwen:[...]}}
-    3. 三台大模型各自担任评审（LLM-as-Judge），按模板对三家生成数据
+    1. 使用同一组种子指令，分别让各家生成模型各生成一批 指令-响应对
+    2. 按模板『输入格式』组装 {"datasets": {各生成模型:[...]}}
+    3. 各模型各自担任评审（LLM-as-Judge），按模板对各家的生成数据
        在 安全性/准确性/多样性/格式规范性 四维打分，输出 model_scores / ranking
     4. 汇总排名，并额外给出「排除自评」口径 —— 某家的生成数据只由
-       “另外两家”评审打分（评审团恰好包含被评模型自己，避免自吹自擂偏差）
+       “另外几家”评审打分（评审团恰好包含被评模型自己，避免自吹自擂偏差）
 
 用法示例：
-    python compare_models.py                        # 默认配置跑全流程
-    python compare_models.py --per-seed 3           # 每条种子生成 3 对（默认 2）
-    python compare_models.py --seeds "种子A|种子B|种子C"
-    python compare_models.py --models glm qwen      # 只对比指定生成模型
-    python compare_models.py --judges deepseek glm  # 只让指定模型当评审
+    python compare_models.py                        # 默认：2 条种子 × 每家 3 对
+    python compare_models.py --seeds 3 --per-seed 2 # 3 条种子，每条 2 对
+    python compare_models.py --models <模型键1> <模型键2>  # 只对比指定生成模型
+    python compare_models.py --judges <模型键1> <模型键2>  # 只让指定模型当评审
     python compare_models.py --dry-run              # 不调用 API，预览流程
 
     python compare_models.py --from-report data/compare/20260911_104142
@@ -23,7 +22,7 @@ compare_models.py — 评价生成语料的大模型：DeepSeek / GLM / Qwen 生
         # 现场演示用：真实跑一次要 25–45 分钟（推理模型单次约 250 秒），等不起。
 
 输出（data/compare/<时间戳>/）：
-    gen_deepseek.jsonl / gen_glm.jsonl / gen_qwen.jsonl   三家各自生成的原始数据
+    gen_<模型键>.jsonl                                     各家各自生成的原始数据
     judge_<评审模型>.json                                  每位评审的完整报告
     summary.json                                           汇总投票与两种口径排名
     控制台直接打印对比表格与最终排名
@@ -54,15 +53,11 @@ DEFAULT_SEEDS = [
     "总结这篇文章的主要观点",
 ]
 
-# 参与对比的生成模型（顺序即表格列顺序）
-COMPARE_MODELS = ["deepseek", "glm", "qwen"]
+# 参与对比的生成模型（顺序即表格列顺序）—— 从 models.json 动态取，不写死具体模型名
+COMPARE_MODELS = list(llm.PROVIDERS.keys())
 
-# 生成模型 中文简称（打印/存档用）
-DISPLAY_NAME = {
-    "deepseek": "DeepSeek",
-    "glm": "GLM-5.3",
-    "qwen": "Qwen3.6",
-}
+# 生成模型显示名（打印/存档用）—— 直接复用 llm.PROVIDERS 的 label
+DISPLAY_NAME = {k: p["label"] for k, p in llm.PROVIDERS.items()}
 
 GEN_SYSTEM = (
     "你是一名高质量数据生成助手。请严格遵循用户要求生成指令-响应对，"
@@ -109,7 +104,7 @@ def build_gen_message(seeds, per_seed):
     ]
 
 
-def generate_items(provider, seeds, per_seed, max_tokens, timeout=600):
+def generate_items(provider, seeds, per_seed, max_tokens, timeout=1800):
     """让 provider 模型按种子生成数据对；返回 items 列表（失败抛异常）。"""
     messages = build_gen_message(seeds, per_seed)
     raw = llm.call_chat(provider, messages, temperature=0.7,
@@ -260,20 +255,20 @@ def load_summary(path):
 def main():
     _ensure_utf8_stdout()
     parser = argparse.ArgumentParser(
-        description="评价生成语料的大模型：DeepSeek / GLM / Qwen 生成质量横向对比")
-    parser.add_argument("--seeds", default=None,
-                        help="种子指令，多个用 | 分隔；不给则用模板自带的 5 条默认种子")
+        description="评价生成语料的大模型：多模型生成质量横向对比")
+    parser.add_argument("--seeds", type=int, default=2,
+                        help="种子数量（默认 2）：取模板自带的默认种子前 N 条")
     parser.add_argument("--models", nargs="+", choices=COMPARE_MODELS,
                         default=COMPARE_MODELS, help="参与对比的生成模型")
     parser.add_argument("--judges", nargs="+", choices=COMPARE_MODELS,
                         default=COMPARE_MODELS, help="担任评审的模型（默认三者互评）")
-    parser.add_argument("--per-seed", type=int, default=2,
-                        help="每家生成模型对每条种子的生成对数（默认 2，共 种子数×2 条）")
+    parser.add_argument("--per-seed", type=int, default=3,
+                        help="每家生成模型对每条种子的生成对数（默认 3，共 种子数×3 条）")
     parser.add_argument("--max-tokens", type=int, default=16384,
                         help="单次调用最大 token 数（默认 16384；推理模型的思维链也占用该预算）")
-    parser.add_argument("--timeout", type=int, default=600,
-                        help="单次调用读超时秒数（默认 600；推理模型生成大 JSON 较慢，"
-                             "实测 GLM/Qwen 单次约 250s，勿低于 300）")
+    parser.add_argument("--timeout", type=int, default=1800,
+                        help="单次调用读超时秒数（默认 1800；推理模型生成大 JSON 较慢，"
+                             "实测 Kimi/Qwen 单次约 250s，勿低于 300）")
     parser.add_argument("--output-dir",
                         default=str(Path(__file__).resolve().parent / "data" / "compare"),
                         help="输出目录（默认 data/compare）")
@@ -310,8 +305,12 @@ def main():
         print(f"（--from-report 为只读重放：未调用任何 API，未写入任何文件）")
         return
 
-    seeds = [s.strip() for s in args.seeds.split("|") if s.strip()] if args.seeds \
-        else DEFAULT_SEEDS
+    if args.seeds < 1:
+        sys.exit("错误：--seeds 必须 >= 1")
+    if args.seeds > len(DEFAULT_SEEDS):
+        print(f"⚠ 种子数 {args.seeds} 超过模板自带默认种子 {len(DEFAULT_SEEDS)} 条，"
+              f"按 {len(DEFAULT_SEEDS)} 条执行。")
+    seeds = DEFAULT_SEEDS[:args.seeds]
     # 与模板保持一致：生成模型缺 Key 自动跳过（但评审判定仍覆盖全部）
     gen_models, _missing = llm.check_available(args.models)
     judge_models, _missing2 = llm.check_available(args.judges)
